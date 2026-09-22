@@ -191,6 +191,30 @@
   }
   input[type=range]:disabled { opacity: .35; cursor: not-allowed; }
 
+  /* token 补填面板。只在服务端回 401 时出现。 */
+  .auth { display: none; width: 100%; gap: 10px; flex-direction: column; }
+  .auth:not([hidden]) { display: flex; }
+  .authMsg { font-size: .82rem; color: var(--dim); }
+  .auth input {
+    width: 100%;
+    box-sizing: border-box;
+    padding: 10px 12px;
+    border: 1px solid var(--faint);
+    border-radius: 10px;
+    background: rgba(0,0,0,.25);
+    color: var(--fg);
+    font: inherit;
+    font-size: .88rem;
+  }
+  .auth input:focus-visible { outline: 2px solid var(--fg); outline-offset: 1px; }
+  /* 方形按钮，和控制区那些圆形的区分开 */
+  .auth button {
+    width: 100%; height: auto;
+    padding: 10px;
+    border-radius: 10px;
+    font: inherit;
+  }
+
   /* 状态条：只在有话要说时占位置 */
   .note {
     min-height: 1.2em;
@@ -249,6 +273,14 @@
   </div>
 
   <div class="note" id="note"></div>
+
+  <!-- token 补填。默认隐藏，401 时出现 —— 否则每次换 token 都得回控制台复制链接。 -->
+  <div class="auth" id="auth" hidden>
+    <div class="authMsg" id="authMsg">token 无效</div>
+    <input id="tokenInput" type="text" autocomplete="off" spellcheck="false"
+           placeholder='粘贴 token，或整行 "token": "..."' aria-label="token">
+    <button id="tokenSave">保存</button>
+  </div>
 </main>
 
 <script>
@@ -265,7 +297,30 @@ if (fromUrl) {
   url.searchParams.delete("t");
   history.replaceState(null, "", url.pathname + url.hash);
 }
-const token = localStorage.getItem(KEY) || "";
+// 不是 const：401 后可以就地补填，不必回控制台复制链接重开页面。
+let token = localStorage.getItem(KEY) || "";
+
+// 从用户粘贴的东西里取出 token。
+//
+// 目标是"怎么粘都行"：光秃秃的 token、config.json 里的整行
+// `"token": "8ed9..."`、带尾逗号、甚至整段 JSON 或那条完整 URL。
+// 用户手边最容易复制到的就是 config.json 里的那一行，要求他们手工剥引号
+// 纯属没必要的刁难。
+function parseToken(raw) {
+  const text = (raw || "").trim();
+  if (!text) return "";
+
+  // 优先找 token 的键值写法，整段 JSON 粘进来也能命中。
+  const keyed = text.match(/["']?token["']?\s*[:=]\s*["']?([A-Za-z0-9._\-]+)/i);
+  if (keyed) return keyed[1];
+
+  // 其次是带 ?t= 的完整 URL。
+  const query = text.match(/[?&]t=([A-Za-z0-9._\-]+)/);
+  if (query) return query[1];
+
+  // 都不像，就当成裸 token；剥掉可能顺手带上的引号和逗号。
+  return text.replace(/^["'\s]+|["',\s]+$/g, "");
+}
 
 const $ = (id) => document.getElementById(id);
 const els = {
@@ -276,6 +331,8 @@ const els = {
   vol: $("vol"), mute: $("mute"), volIcon: $("volIcon"),
   seek: $("seek"), seekBar: $("seekBar"),
   elapsed: $("elapsed"), total: $("total"),
+  auth: $("auth"), authMsg: $("authMsg"),
+  tokenInput: $("tokenInput"), tokenSave: $("tokenSave"),
 };
 
 const ICON = {
@@ -290,9 +347,20 @@ async function api(path, opts = {}) {
     ...opts,
     headers: { ...(opts.headers || {}), Authorization: "Bearer " + token },
   });
-  if (res.status === 401) throw new Error("token 无效，请用控制台打印的完整链接重新打开");
+  if (res.status === 401) {
+    // 不再让用户回控制台重开链接 —— 就地给个输入框。
+    askForToken(token ? "token 无效或已更换" : "还没有 token");
+    throw new Error("token 无效");
+  }
   if (!res.ok) throw new Error("HTTP " + res.status);
   return res;
+}
+
+// 亮出补填面板。已有 token 时预填，方便看出是哪里不对。
+function askForToken(reason) {
+  els.authMsg.textContent = reason + "：粘贴服务端 config.json 里的 token。";
+  els.auth.hidden = false;
+  if (token && !els.tokenInput.value) els.tokenInput.value = token;
 }
 
 // ---- 封面取色 ----
@@ -630,6 +698,44 @@ els.seekBar.addEventListener("change", async () => {
   }
   // 拉一次真值纠偏。
   setTimeout(poll, 400);
+});
+
+// 保存补填的 token。先试一次请求再落盘，免得把错的存进去、下次打开还是坏的。
+async function saveToken() {
+  const next = parseToken(els.tokenInput.value);
+  if (!next) { els.authMsg.textContent = "没认出 token。"; return; }
+
+  els.tokenSave.disabled = true;
+  const previous = token;
+  token = next; // api() 读的是这个变量，先换上才能验证
+  try {
+    const res = await fetch("/api/state", {
+      headers: { Authorization: "Bearer " + next },
+    });
+    if (res.status === 401) {
+      token = previous; // 验不过就还原，别覆盖掉原先可能还有用的那个
+      els.authMsg.textContent = "这个 token 服务端不认，再核对一次。";
+      return;
+    }
+    if (!res.ok) { token = previous; els.authMsg.textContent = "HTTP " + res.status; return; }
+
+    localStorage.setItem(KEY, next);
+    els.auth.hidden = true;
+    els.tokenInput.value = "";
+    els.note.textContent = "";
+    render(await res.json());
+  } catch (e) {
+    token = previous;
+    els.authMsg.textContent = e.message;
+  } finally {
+    els.tokenSave.disabled = false;
+  }
+}
+
+els.tokenSave.onclick = saveToken;
+// 回车即保存，粘贴完不用再找按钮。
+els.tokenInput.addEventListener("keydown", (e) => {
+  if (e.key === "Enter") { e.preventDefault(); saveToken(); }
 });
 
 // 键盘快捷键：桌面上用起来顺手

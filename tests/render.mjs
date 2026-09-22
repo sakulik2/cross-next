@@ -245,6 +245,52 @@ try {
   failed++;
 }
 
+// parseToken 要「怎么粘都行」。用户手边最容易复制到的是 config.json 里的那一行，
+// 要求他们手工剥引号纯属刁难。
+const TOK = "8ed969a4cdfe3111867ee8a0af981ef28e20acaa59a5cd821d9592b35d3a9264";
+const tokenCases = [
+  ["裸 token", TOK, TOK],
+  ["config.json 整行", '  "token": "' + TOK + '"', TOK],
+  ["整行带尾逗号", '  "token": "' + TOK + '",', TOK],
+  ["整段 JSON", '{\\n  "port": 8770,\\n  "token": "' + TOK + '"\\n}', TOK],
+  ["完整 URL", "http://192.168.1.1:8770/?t=" + TOK, TOK],
+  ["前后空白", "  " + TOK + "  \\n", TOK],
+  ["只有引号包着", '"' + TOK + '"', TOK],
+  ["无冒号的 token=", "token=" + TOK, TOK],
+  ["空串", "", ""],
+  ["纯空白", "   ", ""],
+];
+let tokBad = 0;
+for (const [name, input, want] of tokenCases) {
+  let got;
+  try {
+    got = parseToken(input);
+  } catch (e) {
+    got = "<" + e.constructor.name + ": " + e.message + ">";
+  }
+  if (got !== want) {
+    console.log("  FAIL  parseToken " + name + " = " + got);
+    tokBad++;
+  }
+}
+if (tokBad === 0) console.log("  ok    parseToken " + tokenCases.length + " 种粘贴形态");
+failed += tokBad;
+
+// 401 要亮出补填面板，而不是只丢一句错误话。
+try {
+  els.auth.hidden = true;
+  askForToken("token 无效");
+  if (els.auth.hidden) {
+    console.log("  FAIL  401 后补填面板没出现");
+    failed++;
+  } else {
+    console.log("  ok    401 后亮出补填面板");
+  }
+} catch (e) {
+  console.log("  FAIL  401 后亮出补填面板: " + e.constructor.name + ": " + e.message);
+  failed++;
+}
+
 // 模式来回切换：状态不该残留（封面 etag、进度条可见性等）
 try {
   render({ present: true, mode: "mediakey", volume: 0.4, muted: false });
