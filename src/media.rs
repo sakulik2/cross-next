@@ -7,6 +7,7 @@
 //!
 //! HTTP 线程通过 `Remote` 发命令，用一次性通道等回复。
 
+use crate::keepawake;
 use crate::mediakey;
 use crate::volume;
 use crate::winrt_block::{block_on, block_on_progress};
@@ -92,6 +93,8 @@ pub enum Command {
     TogglePlayPause,
     /// 拖动到指定位置（秒）。
     Seek(f64),
+    /// 内部心跳，仅用于刷新休眠抑制状态。不产生回复。
+    Heartbeat,
     /// 设置 QQ音乐 进程音量。
     SetVolume(f32),
     SetMute(bool),
@@ -132,14 +135,40 @@ impl Remote {
 /// 起媒体线程。`target` 是匹配 AUMID 的子串，不区分大小写。
 pub fn spawn(target: String) -> Remote {
     let (tx, rx) = channel();
+    // 心跳线程要往同一个队列里发，所以先克隆一份发送端给媒体线程带走。
+    let tx_self = tx.clone();
     std::thread::Builder::new()
         .name("media".into())
-        .spawn(move || run(rx, target))
+        .spawn(move || run(rx, target, tx_self))
         .expect("媒体线程启动失败");
     Remote { tx }
 }
 
-fn run(rx: Receiver<(Command, Sender<Reply>)>, target: String) {
+/// 定时投心跳，让休眠抑制状态不依赖客户端轮询。
+///
+/// 20 秒足够及时 —— Windows 的最短空闲休眠是 1 分钟，这个间隔能在它决定睡之前
+/// 多次刷新。发送端断开说明媒体线程没了，此时退出。
+fn spawn_heartbeat(tx: Sender<(Command, Sender<Reply>)>) {
+    std::thread::Builder::new()
+        .name("heartbeat".into())
+        .spawn(move || {
+            loop {
+                std::thread::sleep(std::time::Duration::from_secs(20));
+                // 心跳不需要回复，但通道签名要求一个发送端；丢弃接收端即可。
+                let (dummy, _) = channel();
+                if tx.send((Command::Heartbeat, dummy)).is_err() {
+                    return; // 媒体线程已退出
+                }
+            }
+        })
+        .expect("心跳线程启动失败");
+}
+
+fn run(
+    rx: Receiver<(Command, Sender<Reply>)>,
+    target: String,
+    tx_self: Sender<(Command, Sender<Reply>)>,
+) {
     // MTA：block_on 靠 Condvar 阻塞等待，STA 上会因为缺消息泵而死锁。
     unsafe {
         // 已初始化过返回 S_FALSE，不是错误。
@@ -161,12 +190,30 @@ fn run(rx: Receiver<(Command, Sender<Reply>)>, target: String) {
         }
     };
 
+    // 播放期间阻止系统休眠。住在媒体线程里是因为 SetThreadExecutionState 按线程
+    // 生效，而这个线程活整个进程生命周期。
+    let mut awake = keepawake::KeepAwake::new();
+
+    // 自带心跳：不能只在浏览器轮询时更新休眠抑制状态 —— 关掉浏览器后状态会冻结在
+    // 最后一次的值，若那次是「播放中」，机器就永久不睡了。
+    spawn_heartbeat(tx_self);
+
     for (cmd, reply) in rx {
         let out = match cmd {
             Command::Snapshot => match snapshot(&manager, &target) {
-                Ok(s) => Reply::Snapshot(s),
+                Ok(s) => {
+                    awake.set(s.playing);
+                    Reply::Snapshot(s)
+                }
                 Err(e) => Reply::Error(e.message()),
             },
+            // 心跳：只为刷新休眠抑制状态，不需要回复。
+            Command::Heartbeat => {
+                if let Ok(s) = snapshot(&manager, &target) {
+                    awake.set(s.playing);
+                }
+                continue;
+            }
             Command::Prev => transport(&manager, &target, Transport::Prev),
             Command::Next => transport(&manager, &target, Transport::Next),
             Command::TogglePlayPause => transport(&manager, &target, Transport::Toggle),

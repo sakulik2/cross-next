@@ -3,6 +3,7 @@
 pub mod client;
 pub mod http;
 pub mod jsonlite;
+pub mod keepawake;
 pub mod media;
 pub mod mediakey;
 pub mod net;
