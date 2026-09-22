@@ -29,7 +29,13 @@ node tests/render.mjs
 
 `tests/render.mjs` is the only automated test, and it covers the frontend only. Everything on the Rust side — SMTC transport, Core Audio volume, media-key injection, sleep suppression — can only be verified by running the real binaries against a live QQ音乐 instance. CI cannot: its runner has no player, no audio device, and is a non-interactive session where SMTC may not even initialize. A green CI does not mean the features work.
 
-Releases are cut by pushing a `v*` tag (`.github/workflows/release.yml`). It checks the tag against `Cargo.toml`'s `version`, so bump that in the same commit as the tag. The zip's name deliberately carries no version — README links `/releases/latest/download/` with a fixed filename, so renaming the asset breaks that link.
+Releases are cut by pushing a `v*` tag (`.github/workflows/release.yml`). It checks the tag against `Cargo.toml`'s `version`, so bump that in the same commit as the tag.
+
+Order matters, and getting it wrong is the easiest mistake here: **bump `version`, sync `Cargo.lock` with `cargo update -p cross-next`, commit, then tag.** Tagging before the bump lands produces a tag pointing at a commit whose version does not match, the release job fails its own guard, and no release is created — recovering means moving a published tag. Skipping the lock sync leaves `Cargo.lock` stale, which every `--locked` step rejects; that one fails locally, so it's cheap.
+
+The zip's name deliberately carries no version — README links `/releases/latest/download/` with a fixed filename, so renaming the asset breaks that link.
+
+Every `uses:` must resolve to an action whose `action.yml` declares the Node 24 runtime; the runners no longer ship anything older. Check `runs.using` when pinning or bumping one — major tags are where that changes, and a stale pin fails the whole job rather than warning.
 
 ## Binaries
 

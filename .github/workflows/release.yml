@@ -13,13 +13,13 @@ jobs:
     runs-on: windows-latest
 
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
 
       - uses: dtolnay/rust-toolchain@stable
 
       - uses: Swatinem/rust-cache@v2
 
-      # 廉价的守卫，挡住「打了 v0.2.0 但 Cargo.toml 还写着 0.1.0」这类经典错误。
+      # 廉价的守卫，挡住「打了 tag 但忘了同步 Cargo.toml 的 version」这类经典错误。
       - name: 校验 tag 与 Cargo.toml 版本一致
         shell: pwsh
         run: |
@@ -54,7 +54,7 @@ jobs:
           Copy-Item README.md, LICENSE $out
           Compress-Archive -Path $out -DestinationPath "$out.zip"
 
-      - uses: softprops/action-gh-release@v2
+      - uses: softprops/action-gh-release@v3
         with:
           files: cross-next-x86_64-pc-windows-msvc.zip
           generate_release_notes: true

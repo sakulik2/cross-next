@@ -17,7 +17,8 @@ jobs:
     runs-on: windows-latest
 
     steps:
-      - uses: actions/checkout@v4
+      # 这些 action 的固定版都要挑 Node 24 运行时的那条线 —— runner 只提供 Node 24。
+      - uses: actions/checkout@v5
 
       - uses: dtolnay/rust-toolchain@stable
         with:
@@ -37,9 +38,10 @@ jobs:
       - name: 编译
         run: cargo build --release --locked
 
-      - uses: actions/setup-node@v4
+      # 这个版本号是跑测试用的 Node，和 action 自身的运行时是两回事。
+      - uses: actions/setup-node@v5
         with:
-          node-version: "22"
+          node-version: "24"
 
       # 唯一能在 CI 跑的真实测试：只要 Node 和 stub DOM。
       # 抓 render() 里的运行时错误 —— 那种 bug 会让后续更新静默失效。
