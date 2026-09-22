@@ -97,7 +97,8 @@ fn pump(tx: &Sender<&'static str>) {
             continue;
         }
         // wParam 是注册时给的 id。
-        if let Some((_, _, action, name)) = BINDINGS.iter().find(|(id, ..)| *id == msg.wParam.0 as i32)
+        if let Some((_, _, action, name)) =
+            BINDINGS.iter().find(|(id, ..)| *id == msg.wParam.0 as i32)
         {
             println!("{name} -> 转发");
             // 送不出去说明转发线程没了，那时退出循环。
@@ -134,7 +135,8 @@ fn fail(msg: &str) {
     use windows::Win32::System::Console::{ATTACH_PARENT_PROCESS, AttachConsole};
 
     // 从命令行启动时能附加到父进程控制台，那种情况下打印比弹框有用。
-    let has_console = cfg!(debug_assertions) || unsafe { AttachConsole(ATTACH_PARENT_PROCESS) }.is_ok();
+    let has_console =
+        cfg!(debug_assertions) || unsafe { AttachConsole(ATTACH_PARENT_PROCESS) }.is_ok();
     if has_console {
         eprintln!("{msg}");
         return;

@@ -46,9 +46,12 @@ fn main() {
     };
 
     if let Err(e) = client::dispatch(&config, &args) {
-        fail(&format!("{e}
+        fail(&format!(
+            "{e}
 
-{}", usage()));
+{}",
+            usage()
+        ));
     }
 }
 
@@ -64,7 +67,7 @@ fn usage() -> String {
 
      驱动没有「启动程序」选项时，改用 listen.exe（常驻，抢媒体键转发）。
 "
-        .to_string()
+    .to_string()
 }
 
 /// 报错。

@@ -17,7 +17,11 @@ pub fn field(text: &str, key: &str) -> Option<String> {
     let end = rest
         .find(|c: char| c == ',' || c == '}' || c.is_whitespace())
         .unwrap_or(rest.len());
-    if end == 0 { None } else { Some(rest[..end].to_string()) }
+    if end == 0 {
+        None
+    } else {
+        Some(rest[..end].to_string())
+    }
 }
 
 /// 取数字字段。`null` 或非数字返回 None —— `/api/state` 的 volume 就可能是 null。

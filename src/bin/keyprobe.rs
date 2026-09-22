@@ -86,10 +86,7 @@ fn main() {
             let shell_msg = unsafe { RegisterWindowMessageW(w!("SHELLHOOK")) };
             SHELL_MSG.store(shell_msg, Ordering::Relaxed);
             let ok = unsafe { RegisterShellHookWindow(h) }.as_bool();
-            println!(
-                "[2] Shell 钩子: {}",
-                if ok { "已注册" } else { "注册失败" }
-            );
+            println!("[2] Shell 钩子: {}", if ok { "已注册" } else { "注册失败" });
         }
         None => println!("[2] Shell 钩子: 建窗口失败，跳过"),
     }
@@ -195,7 +192,10 @@ unsafe extern "system" fn window_proc(
     // 直接投给本窗口的 WM_APPCOMMAND（正常不会发生，记一笔以防万一）。
     if msg == WM_APPCOMMAND {
         let cmd = ((lparam.0 >> 16) & 0x0fff) as u32;
-        report(format!("  [2] 直接 WM_APPCOMMAND: {}", appcommand_name(cmd)));
+        report(format!(
+            "  [2] 直接 WM_APPCOMMAND: {}",
+            appcommand_name(cmd)
+        ));
         return LRESULT(1);
     }
 

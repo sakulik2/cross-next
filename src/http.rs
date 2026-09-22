@@ -165,7 +165,11 @@ impl Response {
     }
 
     fn json(body: String) -> Self {
-        Self::new("200 OK", "application/json; charset=utf-8", body.into_bytes())
+        Self::new(
+            "200 OK",
+            "application/json; charset=utf-8",
+            body.into_bytes(),
+        )
     }
 
     fn text(status: &'static str, msg: &str) -> Self {

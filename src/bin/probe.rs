@@ -10,7 +10,6 @@
 use windows::Media::Control::GlobalSystemMediaTransportControlsSessionManager as SessionManager;
 // windows-future 的 Async trait 是私有的，没有公开的阻塞 get()，自己写了一个。
 use cross_next::winrt_block::block_on;
-use windows::core::Interface; // IAudioSessionControl -> IAudioSessionControl2 的 cast
 use windows::Win32::Media::Audio::{
     IAudioSessionControl2, IAudioSessionManager2, IMMDeviceEnumerator, MMDeviceEnumerator,
     eMultimedia, eRender,
@@ -18,6 +17,7 @@ use windows::Win32::Media::Audio::{
 use windows::Win32::System::Com::{
     CLSCTX_ALL, COINIT_MULTITHREADED, CoCreateInstance, CoInitializeEx,
 };
+use windows::core::Interface; // IAudioSessionControl -> IAudioSessionControl2 的 cast
 use windows::core::Result;
 
 fn main() {
@@ -140,9 +140,19 @@ fn probe_smtc() -> Result<usize> {
             Ok(props) => {
                 let title = props.Title().map(|s| s.to_string()).unwrap_or_default();
                 let artist = props.Artist().map(|s| s.to_string()).unwrap_or_default();
-                let album = props.AlbumTitle().map(|s| s.to_string()).unwrap_or_default();
+                let album = props
+                    .AlbumTitle()
+                    .map(|s| s.to_string())
+                    .unwrap_or_default();
                 println!("    曲目: {title} / {artist} / {album}");
-                println!("    封面: {}", if props.Thumbnail().is_ok() { "有" } else { "无" });
+                println!(
+                    "    封面: {}",
+                    if props.Thumbnail().is_ok() {
+                        "有"
+                    } else {
+                        "无"
+                    }
+                );
             }
             Err(e) => println!("    曲目: <读取失败 {e}>"),
         }

@@ -67,7 +67,11 @@ unsafe fn collect(mut adapter: *const IP_ADAPTER_ADDRESSES_LH, out: &mut Vec<Ipv
         // IfOperStatusUp == 1。只要已启用的网卡。
         if a.OperStatus.0 == 1 {
             let has_gateway = !a.FirstGatewayAddress.is_null();
-            let bucket = if has_gateway { &mut routed } else { &mut isolated };
+            let bucket = if has_gateway {
+                &mut routed
+            } else {
+                &mut isolated
+            };
 
             let mut unicast = a.FirstUnicastAddress;
             while !unicast.is_null() {

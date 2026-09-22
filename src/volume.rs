@@ -28,7 +28,9 @@ pub fn read(target: &str) -> Result<Option<VolumeState>> {
         if found.is_none() {
             found = Some(VolumeState {
                 level: unsafe { vol.GetMasterVolume() }.unwrap_or(0.0),
-                muted: unsafe { vol.GetMute() }.map(|b| b.as_bool()).unwrap_or(false),
+                muted: unsafe { vol.GetMute() }
+                    .map(|b| b.as_bool())
+                    .unwrap_or(false),
             });
         }
         Ok(())

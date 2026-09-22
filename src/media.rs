@@ -17,8 +17,8 @@ use windows::Media::Control::{
     GlobalSystemMediaTransportControlsSessionManager as SessionManager,
     GlobalSystemMediaTransportControlsSessionPlaybackStatus as PlaybackStatus,
 };
-use windows::Win32::System::Com::{COINIT_MULTITHREADED, CoInitializeEx};
 use windows::Storage::Streams::{Buffer, DataReader, InputStreamOptions};
+use windows::Win32::System::Com::{COINIT_MULTITHREADED, CoInitializeEx};
 use windows::core::Result;
 
 /// 封面图最大读取字节数。SMTC 缩略图通常远小于此，设上限只为防意外。
@@ -362,7 +362,10 @@ fn snapshot(manager: &SessionManager, target: &str) -> Result<Snapshot> {
     if let Ok(props) = session.TryGetMediaPropertiesAsync().and_then(block_on) {
         snap.title = props.Title().map(|s| s.to_string()).unwrap_or_default();
         snap.artist = props.Artist().map(|s| s.to_string()).unwrap_or_default();
-        snap.album = props.AlbumTitle().map(|s| s.to_string()).unwrap_or_default();
+        snap.album = props
+            .AlbumTitle()
+            .map(|s| s.to_string())
+            .unwrap_or_default();
     }
 
     if let Ok(info) = session.GetPlaybackInfo() {
