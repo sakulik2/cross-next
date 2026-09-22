@@ -6,7 +6,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 Control QQ音乐 (QQ Music) running on one Windows machine from a browser on another machine on the LAN. Server and web UI are a single process; the laptop installs nothing.
 
-Read `README.md` first — it documents user-facing behavior and the empirically-discovered constraints that shaped the design.
+Read `README.md` first for user-facing behavior. It is deliberately a reference, not an essay: state what is, skip the why. Rationale belongs here instead — don't move it back.
 
 ## Commands
 
@@ -55,7 +55,7 @@ These came from running the code against real QQ音乐; don't re-derive them.
 
 - **Session isolation.** SMTC sessions are per-Windows-logon-session. Non-interactive sessions see nothing; Win11 throws `0x80070424` from `RequestAsync()`. The server cannot be a service or started over SSH. `probe` checks this first via `ProcessIdToSessionId` vs `WTSGetActiveConsoleSessionId`.
 - **Don't gate buttons on `Controls()` capability bits.** QQ音乐 reports them incompletely (`IsPauseEnabled=false` while status is `Opened`), which would grey out the play button forever. Send the command and report the `Try*Async` bool honestly — `false` means the app declined, which is not an error.
-- **Timeline is unreliable.** Some states report `0.0/0.0` with `IsPlaybackPositionEnabled=false`. There is no progress bar or seek in the UI.
+- **Timeline reports `0.0/0.0` before playback really starts.** An early reading of that state (with `IsPlaybackPositionEnabled=false`) is why there is no progress bar; during actual playback the timeline does report. Treat a progress bar as unimplemented, not impossible — but it can only exist in `smtc` mode.
 - **Audio sessions are dynamic.** Core Audio lists only sessions that have been active, so QQ音乐 is absent when silent. Re-enumerate on every call; `volume: null` means "unavailable", not zero. Also: the API keys on PID, not name, and one app may hold several sessions — set all matches. `volume.rs` prefers exact process-name matches so a `target` of `qq` doesn't also hit `QQ.exe`.
 - **Adapter choice.** Prefer adapters that have a default gateway. WSL2/Hyper-V virtual adapters use `172.x`, pass an RFC1918 check, and are unreachable from other LAN devices. Never bind `0.0.0.0`.
 - **Thumbnails are not cached server-side.** SMTC art can lag the track metadata by a beat; caching pins the stale image permanently. The server returns a content hash as `ETag` with `Cache-Control: no-store`, and the page re-checks at 200ms/1.2s/3s after a track change.
@@ -69,6 +69,6 @@ No test framework. To exercise render branches, extract the `<script>` block and
 
 ## Conventions
 
-Comments and user-facing strings are in Chinese, matching README. Comments explain *why* — especially where behavior is counterintuitive or was settled by experiment. Keep that; several comments are the only record of a constraint.
+Commit messages are in English. Comments and user-facing strings are in Chinese, matching README. Comments explain *why* — especially where behavior is counterintuitive or was settled by experiment. Keep that; several comments are the only record of a constraint.
 
 `config.json` (server) and `remote.json` (client) live beside the exe, are generated on first run, hold the shared token, and are gitignored. Token comparison is constant-time. Plain HTTP by design — the token blocks fumbles from other devices on the subnet, not sniffing; the port must not be forwarded to the internet.
