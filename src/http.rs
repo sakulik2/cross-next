@@ -197,6 +197,11 @@ fn route(req: &Request, token: &str, media: &Remote) -> Response {
                 "next" => Command::Next,
                 "prev" => Command::Prev,
                 "playpause" => Command::TogglePlayPause,
+                // seek 需要 position 参数（秒）。
+                "seek" => match json_num(&req.body, "position") {
+                    Some(secs) => Command::Seek(secs),
+                    None => return Response::text("400 Bad Request", "seek 需要 position"),
+                },
                 _ => return Response::text("400 Bad Request", "未知的 action"),
             };
             accepted_response(media.call(cmd))
@@ -310,6 +315,17 @@ fn state_json(s: &Snapshot) -> String {
     out.push_str(&format!("\"artist\":{},", quote(&s.artist)));
     out.push_str(&format!("\"album\":{},", quote(&s.album)));
     out.push_str(&format!("\"artTag\":{},", quote(&s.art_tag)));
+    // 位置已在服务端按 LastUpdatedTime 外推过 —— 浏览器在另一台机器上，
+    // 用它自己的时钟算会引入两机时钟偏移。
+    match s.position {
+        Some(p) => out.push_str(&format!("\"position\":{p:.3},")),
+        None => out.push_str("\"position\":null,"),
+    }
+    match s.duration {
+        Some(d) => out.push_str(&format!("\"duration\":{d:.3},")),
+        None => out.push_str("\"duration\":null,"),
+    }
+    out.push_str(&format!("\"canSeek\":{},", s.can_seek));
     // 音量为 null 表示 QQ音乐 当前没有音频会话（没出声），前端据此置灰滑杆。
     match s.volume {
         Some(v) => out.push_str(&format!("\"volume\":{v:.4},")),

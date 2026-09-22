@@ -13,12 +13,12 @@
 ## 功能
 
 - 上一首 / 下一首 / 播放暂停
+- 进度条与拖动定位（仅 `smtc` 模式，且会话上报时间轴时）
 - 曲名、歌手、专辑、封面；封面主色驱动背景渐变
 - 单独调 QQ音乐 的进程音量与静音，不影响系统总音量
 - 手机可「添加到主屏幕」
 
-不支持搜索点播、播放队列、歌词 —— SMTC 不提供歌曲 ID、列表和歌词。进度条未实现
-（`GetTimelineProperties()` 与 `TryChangePlaybackPositionAsync()` 在 `smtc` 模式下可用）。
+不支持搜索点播、播放队列、歌词 —— SMTC 不提供歌曲 ID、列表和歌词。
 
 ## 产物
 
@@ -164,7 +164,7 @@ cargo run --bin probe
 |---|---|
 | `GET /` | 内嵌前端页面 |
 | `GET /api/state` | 当前曲目、播放状态、音量、控制模式 |
-| `POST /api/cmd` | `{"action":"next"\|"prev"\|"playpause"}` |
+| `POST /api/cmd` | `{"action":"next"\|"prev"\|"playpause"}`；`{"action":"seek","position":<秒>}` |
 | `POST /api/volume` | `{"level":0.0-1.0}` 或 `{"mute":true}` |
 | `GET /api/thumbnail` | 封面字节，ETag 为内容哈希；`mediakey` 模式恒 404 |
 | `GET /api/sessions` | 所有 SMTC 会话 |
@@ -176,5 +176,9 @@ cargo run --bin probe
   前端据此置灰滑杆而非显示 0。
 - `matched` — false 表示未匹配到 `target`，当前控制的是系统「当前会话」，见 `aumid`。
 - `artTag` — 曲目元数据哈希，换歌才变；前端据此决定是否重取封面。
+- `position` / `duration` — 秒。`null` 表示该会话不上报时间轴（直播流、
+  或播放尚未真正开始），此时前端隐藏进度条。`position` 已由服务端按
+  `LastUpdatedTime` 外推到当前时刻。
+- `canSeek` — 应用是否允许拖动定位。为 false 时仍显示进度，只是禁止拖动。
 
 命令类接口返回 `{"accepted": bool}`。`false` 表示 QQ音乐 拒绝了该命令，不是错误。

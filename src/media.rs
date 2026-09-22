@@ -63,6 +63,13 @@ pub struct Snapshot {
     pub playing: bool,
     /// 封面的内容标识，随曲目变化。前端用它判断要不要重取图。
     pub art_tag: String,
+    /// 播放位置（秒），已按 LastUpdatedTime 外推到「现在」。
+    /// None 表示这个会话不上报时间轴。
+    pub position: Option<f64>,
+    /// 总时长（秒）。None 同上。
+    pub duration: Option<f64>,
+    /// 应用是否允许拖动定位。
+    pub can_seek: bool,
     /// QQ音乐 的音量 0.0-1.0；会话不存在时为 None（未出声时 Core Audio 里没有它）。
     pub volume: Option<f32>,
     pub muted: Option<bool>,
@@ -83,6 +90,8 @@ pub enum Command {
     Prev,
     Next,
     TogglePlayPause,
+    /// 拖动到指定位置（秒）。
+    Seek(f64),
     /// 设置 QQ音乐 进程音量。
     SetVolume(f32),
     SetMute(bool),
@@ -161,6 +170,7 @@ fn run(rx: Receiver<(Command, Sender<Reply>)>, target: String) {
             Command::Prev => transport(&manager, &target, Transport::Prev),
             Command::Next => transport(&manager, &target, Transport::Next),
             Command::TogglePlayPause => transport(&manager, &target, Transport::Toggle),
+            Command::Seek(secs) => seek(&manager, &target, secs),
             Command::SetVolume(v) => match volume::set_volume(&target, v) {
                 Ok(applied) => Reply::Accepted(applied),
                 Err(e) => Reply::Error(e.message()),
@@ -310,7 +320,13 @@ fn snapshot(manager: &SessionManager, target: &str) -> Result<Snapshot> {
 
     if let Ok(info) = session.GetPlaybackInfo() {
         snap.playing = matches!(info.PlaybackStatus(), Ok(PlaybackStatus::Playing));
+        snap.can_seek = info
+            .Controls()
+            .and_then(|c| c.IsPlaybackPositionEnabled())
+            .unwrap_or(false);
     }
+
+    read_timeline(&session, &mut snap);
 
     // 曲目标识兼作封面缓存键。用元数据而非计数器，这样曲目没变时前端不会重取图。
     snap.art_tag = art_tag(&snap);
@@ -323,6 +339,90 @@ fn snapshot(manager: &SessionManager, target: &str) -> Result<Snapshot> {
     }
 
     Ok(snap)
+}
+
+/// 读时间轴并把 Position 外推到「现在」。
+///
+/// `Position` 是**快照**，只在 `LastUpdatedTime` 那一刻准确。播放中必须加上从那一刻
+/// 到现在的墙钟差值，否则前端每秒拿到的都是同一个陈旧值，进度条会一格一格地跳。
+///
+/// 外推刻意放在服务端：浏览器在另一台机器上，它的时钟和本机的 `LastUpdatedTime`
+/// 不在同一基准上，拿客户端时钟去算会引入两机时钟偏移。
+///
+/// 时间单位统一是 100ns —— `TimeSpan::Duration`、`DateTime::UniversalTime`
+/// 和 `FILETIME` 都以此计，且后两者同为 1601 纪元，可以直接相减。
+fn read_timeline(session: &Session, snap: &mut Snapshot) {
+    const TICKS_PER_SEC: f64 = 1e7;
+
+    let Ok(t) = session.GetTimelineProperties() else {
+        return;
+    };
+
+    let start = t.StartTime().map(|d| d.Duration).unwrap_or(0);
+    let end = t.EndTime().map(|d| d.Duration).unwrap_or(0);
+
+    // EndTime 为 0 表示这个会话不上报时间轴（部分 QQ音乐 状态如此）。
+    // 此时整块降级为 None，让前端隐藏进度条而不是显示错误数据。
+    if end <= start {
+        return;
+    }
+
+    let Ok(pos) = t.Position().map(|d| d.Duration) else {
+        return;
+    };
+
+    let mut position = pos;
+
+    // 只在播放中外推。暂停时 Position 就是当前值，加上时间差反而会往前跑。
+    // LastUpdatedTime 可能比系统时间略新（或系统时钟刚被调整过），负值当 0 处理，
+    // 不要让进度倒退。
+    if snap.playing {
+        let elapsed = t
+            .LastUpdatedTime()
+            .map(|d| now_ticks().saturating_sub(d.UniversalTime))
+            .unwrap_or(0)
+            .max(0);
+        position = position.saturating_add(elapsed);
+    }
+
+    // 外推可能略微越过终点，夹住以免前端算出 >100%。
+    let position = position.clamp(start, end);
+
+    // StartTime 通常是 0，但不保证；一律以它为原点。
+    snap.position = Some((position - start) as f64 / TICKS_PER_SEC);
+    snap.duration = Some((end - start) as f64 / TICKS_PER_SEC);
+}
+
+/// 当前时间，100ns 计，1601 纪元 —— 与 `DateTime::UniversalTime` 同基准。
+fn now_ticks() -> i64 {
+    use windows::Win32::System::SystemInformation::GetSystemTimeAsFileTime;
+
+    let ft = unsafe { GetSystemTimeAsFileTime() };
+    ((ft.dwHighDateTime as i64) << 32) | (ft.dwLowDateTime as i64)
+}
+
+/// 拖动到指定位置（秒）。
+fn seek(manager: &SessionManager, target: &str, secs: f64) -> Reply {
+    let Ok(Some((session, _))) = find_session(manager, target) else {
+        // mediakey 模式下没有会话，定位无从下手。
+        return Reply::Error("当前通路不支持拖动定位".into());
+    };
+
+    // 加上 StartTime 换回绝对位置 —— 前端发来的是相对于起点的秒数。
+    let start = session
+        .GetTimelineProperties()
+        .and_then(|t| t.StartTime())
+        .map(|d| d.Duration)
+        .unwrap_or(0);
+    let ticks = start + (secs.max(0.0) * 1e7) as i64;
+
+    match session
+        .TryChangePlaybackPositionAsync(ticks)
+        .and_then(block_on)
+    {
+        Ok(accepted) => Reply::Accepted(accepted),
+        Err(e) => Reply::Error(e.message()),
+    }
 }
 
 /// 由曲目元数据派生一个短标识。前端用它判断曲目是否换了。

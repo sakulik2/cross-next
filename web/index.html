@@ -103,6 +103,23 @@
     text-overflow: ellipsis;
   }
 
+  /* 进度条。hidden 属性由 JS 控制 —— 会话不上报时间轴时整块不占位。 */
+  .seek { width: 100%; }
+  .seek[hidden] { display: none; }
+
+  .times {
+    display: flex;
+    justify-content: space-between;
+    font-size: .74rem;
+    color: var(--dim);
+    /* 等宽数字，避免秒数变化时左右跳动 */
+    font-variant-numeric: tabular-nums;
+    margin-top: -2px;
+  }
+
+  /* 不可拖动时（应用不允许 seek）仍显示进度，只是不能操作 */
+  #seekBar:disabled { cursor: default; }
+
   .controls {
     display: flex;
     align-items: center;
@@ -202,6 +219,15 @@
     <div class="artist" id="artist"></div>
   </div>
 
+  <div class="seek" id="seek" hidden>
+    <input type="range" id="seekBar" min="0" max="1000" value="0" step="1"
+           aria-label="播放进度">
+    <div class="times">
+      <span id="elapsed">0:00</span>
+      <span id="total">0:00</span>
+    </div>
+  </div>
+
   <div class="controls">
     <button id="prev" aria-label="上一首" title="上一首">
       <svg viewBox="0 0 24 24"><path d="M7 6h2v12H7zm3 6 8.5 6V6z"/></svg>
@@ -248,6 +274,8 @@ const els = {
   play: $("play"), playIcon: $("playIcon"),
   prev: $("prev"), next: $("next"),
   vol: $("vol"), mute: $("mute"), volIcon: $("volIcon"),
+  seek: $("seek"), seekBar: $("seekBar"),
+  elapsed: $("elapsed"), total: $("total"),
 };
 
 const ICON = {
@@ -323,6 +351,10 @@ let pending = 0;         // 乐观更新后的宽限期，避免被旧快照回�
 let volDragging = false; // 拖动音量时不让轮询覆盖滑杆位置
 let muted = false;       // 服务端报告的静音状态，静音键据此取反
 let artEtag = null;      // 已显示封面的内容哈希，用于判断图是否真的换了
+// 进度条状态。服务端每秒给一个已外推的 position，两次之间由本地时钟插值补平，
+// 否则进度条会一秒一跳。seekDragging 期间完全交给用户，不被轮询覆盖。
+let seekDragging = false;
+let track = null; // { position, duration, playing, at } —— at 是收到该值时的本地时刻
 
 // volume 为 null 表示 QQ音乐 当前没有音频会话（没出声）。
 function renderVolume(s) {
@@ -334,6 +366,48 @@ function renderVolume(s) {
   els.volIcon.setAttribute("d", muted ? ICON.muted : ICON.loud);
   return hasVol;
 }
+
+/// 秒 -> m:ss
+function fmtTime(sec) {
+  if (!isFinite(sec) || sec < 0) sec = 0;
+  const m = Math.floor(sec / 60);
+  const s = Math.floor(sec % 60);
+  return m + ":" + String(s).padStart(2, "0");
+}
+
+// 记下服务端给的时间轴。position 已由服务端按 LastUpdatedTime 外推，
+// 这里再记一个本地时刻，用于两次轮询之间的插值。
+function renderSeek(s) {
+  const has = s.position !== null && s.position !== undefined
+           && s.duration !== null && s.duration !== undefined && s.duration > 0;
+
+  els.seek.hidden = !has;
+  if (!has) { track = null; return; }
+
+  track = { position: s.position, duration: s.duration, playing: !!s.playing, at: performance.now() };
+  // canSeek 为 false 时仍显示进度，只是禁止拖动。
+  els.seekBar.disabled = !s.canSeek;
+  els.total.textContent = fmtTime(s.duration);
+  paint();
+}
+
+// 每帧按本地时钟把进度往前推。只有播放中才推进；拖动时完全不动，
+// 免得和用户的手指打架。
+function paint() {
+  if (!track || seekDragging) return;
+
+  const drift = track.playing ? (performance.now() - track.at) / 1000 : 0;
+  const pos = Math.min(track.position + drift, track.duration);
+
+  els.seekBar.value = Math.round((pos / track.duration) * 1000);
+  els.elapsed.textContent = fmtTime(pos);
+}
+
+function tick() {
+  paint();
+  requestAnimationFrame(tick);
+}
+requestAnimationFrame(tick);
 
 // 取封面。服务端的 ETag 是图片内容哈希，只有真的换了图才重绘。
 async function loadArt() {
@@ -371,9 +445,11 @@ function render(s) {
     els.note.textContent = "打开 QQ音乐 并播放任意歌曲";
     els.art.classList.add("empty");
     els.artImg.hidden = true;
+    els.seek.hidden = true;
     document.body.classList.remove("playing");
     lastTag = null;
     artEtag = null;
+    track = null;
     applyColors(null);
     return;
   }
@@ -386,8 +462,10 @@ function render(s) {
     els.art.classList.add("empty");
     els.artImg.hidden = true;
     document.body.classList.add("playing");
+    els.seek.hidden = true;
     lastTag = null;
     artEtag = null;
+    track = null;
     applyColors(null);
     renderVolume(s);
     els.note.textContent = "媒体键模式：按键是全局的，若有其它播放器在放可能被抢走";
@@ -412,6 +490,7 @@ function render(s) {
     setTimeout(loadArt, 3000);
   }
 
+  renderSeek(s);
   const hasVol = renderVolume(s);
 
   const notes = [];
@@ -505,6 +584,38 @@ els.vol.addEventListener("input", () => {
 els.vol.addEventListener("change", () => {
   volDragging = false;
   setVolume(els.vol.value / 100);
+});
+
+// 拖动进度：按下即接管显示，松手才发命令。拖动过程中不发 —— 一次 seek
+// 就够了，中途连发会让播放器来回跳。
+els.seekBar.addEventListener("pointerdown", () => { seekDragging = true; });
+
+els.seekBar.addEventListener("input", () => {
+  if (!track) return;
+  // 拖动时实时更新时间文字，让用户看到目标位置。
+  els.elapsed.textContent = fmtTime((els.seekBar.value / 1000) * track.duration);
+});
+
+els.seekBar.addEventListener("change", async () => {
+  if (!track) { seekDragging = false; return; }
+  const position = (els.seekBar.value / 1000) * track.duration;
+  // 乐观更新：立刻以新位置为基准，不等服务端确认。
+  track = { ...track, position, at: performance.now() };
+  seekDragging = false;
+
+  try {
+    const r = await (await api("/api/cmd", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ action: "seek", position }),
+    })).json();
+    els.note.textContent = r.error ? r.error
+      : (r.accepted === false ? "QQ音乐 未接受拖动定位" : "");
+  } catch (e) {
+    els.note.textContent = e.message;
+  }
+  // 拉一次真值纠偏。
+  setTimeout(poll, 400);
 });
 
 // 键盘快捷键：桌面上用起来顺手
