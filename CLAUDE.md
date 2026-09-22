@@ -37,7 +37,7 @@ Releases are cut by pushing a `v*` tag (`.github/workflows/release.yml`). It che
 |---|---|
 | `cross-next` | The server. Runs on the machine playing music. |
 | `remote` | One-shot client. For mouse drivers that can bind "launch program". |
-| `listen` | Resident forwarder. Grabs media keys via `RegisterHotKey`, forwards to the server. For drivers offering only preset media-key actions. |
+| `listen` | Resident forwarder. Grabs media keys via `RegisterHotKey`, forwards to the server. For drivers offering only preset media-key actions. Has no window or tray icon, so it takes over any previous instance on launch and stops via `--stop`. |
 | `probe` | Prints session context, all SMTC sessions, all audio sessions. |
 | `keyprobe` | Hooks keyboard/shell/hotkey channels at once to see what a driver actually emits. |
 
@@ -73,6 +73,7 @@ These came from running the code against real QQ音乐; don't re-derive them.
 - **Adapter choice.** Prefer adapters that have a default gateway. WSL2/Hyper-V virtual adapters use `172.x`, pass an RFC1918 check, and are unreachable from other LAN devices. Never bind `0.0.0.0`.
 - **Thumbnails are not cached server-side.** SMTC art can lag the track metadata by a beat; caching pins the stale image permanently. The server returns a content hash as `ETag` with `Cache-Control: no-store`, and the page re-checks at 200ms/1.2s/3s after a track change.
 - **Honor `Connection: close`.** `client.rs` sends it and reads exactly `Content-Length` bytes. A server that ignores the header while the client waits for EOF stalls until timeout.
+- **There is no way to ask who owns a hotkey.** `RegisterHotKey` failing tells you only that it failed. So `listen` identifies *its own* prior instance instead: a hidden window with a unique class name, found via `FindWindowW` and asked to quit with `WM_CLOSE`. Deliberately not process-name matching plus a kill — `listen.exe` is a generic enough name to hit something unrelated, and `WM_CLOSE` lets the old instance `UnregisterHotKey` on its way out, which a kill does not. Its message loop must call `DispatchMessageW`; `WM_HOTKEY` goes to the thread and is handled inline, but without dispatch the marker window never sees `WM_CLOSE` and takeover silently does nothing.
 
 ## Frontend
 
