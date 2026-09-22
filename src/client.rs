@@ -12,6 +12,8 @@ use std::time::Duration;
 /// 服务器没开时不该让鼠标像卡住一样等着。
 const TIMEOUT: Duration = Duration::from_secs(2);
 
+/// `PartialEq` 用于热重载时判断配置是否真的变了（编辑器保存一次可能触发多次通知）。
+#[derive(Clone, PartialEq)]
 pub struct Config {
     pub host: String,
     pub port: u16,

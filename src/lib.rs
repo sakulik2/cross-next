@@ -8,4 +8,5 @@ pub mod media;
 pub mod mediakey;
 pub mod net;
 pub mod volume;
+pub mod watch;
 pub mod winrt_block;

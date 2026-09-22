@@ -31,7 +31,8 @@
 
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
-use cross_next::client;
+use cross_next::{client, watch};
+use std::sync::Arc;
 use std::sync::mpsc::{Sender, channel};
 use windows::Win32::Foundation::{HWND, LPARAM, LRESULT, WPARAM};
 use windows::Win32::UI::Input::KeyboardAndMouse::{
@@ -54,6 +55,13 @@ const BINDINGS: [(i32, u16, &str, &str); 3] = [
 
 /// 隐藏标记窗口的类名。够独特，不会和别的程序撞。
 const MARKER_CLASS: windows::core::PCWSTR = w!("CrossNextListenMarker");
+
+/// 监视线程发给主线程的自定义消息。
+///
+/// 热键只能由注册它的线程释放，所以让出/抢回必须回到主线程做 ——
+/// 监视线程只负责判断，通过 PostMessage 通知。
+const WM_APP_YIELD: u32 = windows::Win32::UI::WindowsAndMessaging::WM_APP + 1;
+const WM_APP_RECLAIM: u32 = windows::Win32::UI::WindowsAndMessaging::WM_APP + 2;
 
 fn main() {
     // 声明 DPI 感知，否则高分屏上消息框会被系统按 96 DPI 渲染再放大，字发虚。
@@ -121,10 +129,17 @@ fn main() {
         return;
     }
 
+    // 配置放进共享状态，这样改 remote.json 能就地生效，不必重启进程 ——
+    // 重启会先释放热键再重新注册，那个窗口期里别的程序可能抢走。
+    let shared = watch::Shared::new(config);
+
     // 转发线程：网络往返约 50ms，放在消息循环里会拖慢连按。
     let (tx, rx) = channel::<&'static str>();
+    let forward_shared = Arc::clone(&shared);
     std::thread::spawn(move || {
         for action in rx {
+            // 每次取当前配置，热重载后立刻生效。
+            let config = forward_shared.config();
             if let Err(e) = client::dispatch(&config, &[action.to_string()]) {
                 // 常驻程序不该为单次失败弹框打扰人，打到控制台（若有）即可。
                 eprintln!("[{action}] 失败: {e}");
@@ -132,8 +147,27 @@ fn main() {
         }
     });
 
+    // 监视线程：配置热重载 + 空闲时探活。热键的让出与抢回必须回到主线程做
+    // （热键只能由注册它的线程释放），所以这里只发消息。
+    // HWND 不是 Send，用裸指针跨线程传递句柄值本身。
+    let marker_raw = marker.0 as isize;
+    watch::spawn(Arc::clone(&shared), move |event| {
+        let hwnd = HWND(marker_raw as *mut _);
+        match event {
+            watch::Event::Reloaded(target) => {
+                println!("配置已重载 -> {target}");
+            }
+            watch::Event::Unreachable => {
+                let _ = unsafe { PostMessageW(Some(hwnd), WM_APP_YIELD, WPARAM(0), LPARAM(0)) };
+            }
+            watch::Event::Recovered => {
+                let _ = unsafe { PostMessageW(Some(hwnd), WM_APP_RECLAIM, WPARAM(0), LPARAM(0)) };
+            }
+        }
+    });
+
     announce(&target, &registered, replaced);
-    pump(&tx);
+    pump(&tx, &shared, &mut registered);
 
     for (id, _) in &registered {
         let _ = unsafe { UnregisterHotKey(None, *id) };
@@ -227,7 +261,11 @@ unsafe extern "system" fn marker_proc(
 }
 
 /// 消息循环。热键触发时投 WM_HOTKEY 到本线程队列。
-fn pump(tx: &Sender<&'static str>) {
+fn pump(
+    tx: &Sender<&'static str>,
+    shared: &Arc<watch::Shared>,
+    registered: &mut Vec<(i32, &'static str)>,
+) {
     let mut msg = MSG::default();
     // GetMessageW 返回 0 表示收到 WM_QUIT，-1 表示出错。
     while unsafe { GetMessageW(&mut msg, None, 0, 0) }.as_bool() {
@@ -238,9 +276,43 @@ fn pump(tx: &Sender<&'static str>) {
                 BINDINGS.iter().find(|(id, ..)| *id == msg.wParam.0 as i32)
             {
                 println!("{name} -> 转发");
+                // 按键本身就是一次连通性测试，记一笔以推迟下次探活。
+                shared.touch();
                 // 送不出去说明转发线程没了，那时退出循环。
                 if tx.send(action).is_err() {
                     break;
+                }
+            }
+            continue;
+        }
+
+        // 服务端连不上：放开热键，让媒体键回到本机播放器。进程继续跑并后台重连 ——
+        // 自己退出的话用户既感知不到、也没有界面能重新启动。
+        if msg.message == WM_APP_YIELD {
+            if !registered.is_empty() {
+                for (id, _) in registered.iter() {
+                    let _ = unsafe { UnregisterHotKey(None, *id) };
+                }
+                registered.clear();
+                println!("服务端连不上，已放开媒体键（本机播放器恢复接管），后台重连中");
+            }
+            continue;
+        }
+
+        // 服务端回来了：重新抢热键。可能抢不回来（让出期间被别的程序占了），
+        // 那种情况如实报告，下一轮探活还会再试。
+        if msg.message == WM_APP_RECLAIM {
+            if registered.is_empty() {
+                for (id, vk, _, name) in BINDINGS {
+                    if unsafe { RegisterHotKey(None, id, HOT_KEY_MODIFIERS(0), vk as u32) }.is_ok()
+                    {
+                        registered.push((id, name));
+                    }
+                }
+                if registered.is_empty() {
+                    println!("服务端已恢复，但媒体键已被其它程序占用，稍后重试");
+                } else {
+                    println!("服务端已恢复，媒体键重新接管");
                 }
             }
             continue;
