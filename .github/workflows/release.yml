@@ -1,0 +1,71 @@
+name: Release
+
+# 只在打 tag 时发 —— 「值得的时候」由这个显式动作决定，不是每次 push。
+on:
+  push:
+    tags: ["v*"]
+
+permissions:
+  contents: write # 创建 Release 所需，仅此
+
+jobs:
+  release:
+    runs-on: windows-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - uses: Swatinem/rust-cache@v2
+
+      # 廉价的守卫，挡住「打了 v0.2.0 但 Cargo.toml 还写着 0.1.0」这类经典错误。
+      - name: 校验 tag 与 Cargo.toml 版本一致
+        shell: pwsh
+        run: |
+          $tag = "${{ github.ref_name }}" -replace '^v', ''
+          $found = Select-String -Path Cargo.toml -Pattern '^version = "(.+)"'
+          # 不止一处说明有依赖也写了零缩进的 version，此时取第一个会静默取错
+          if ($found.Count -ne 1) {
+            Write-Error "Cargo.toml 里有 $($found.Count) 处顶格 version，无法确定包版本"
+            exit 1
+          }
+          $manifest = $found.Matches[0].Groups[1].Value
+          if ($tag -ne $manifest) {
+            Write-Error "tag 是 v$tag，但 Cargo.toml 写的是 $manifest —— 先对齐再发布"
+            exit 1
+          }
+          Write-Host "版本一致: $manifest"
+
+      - name: 编译
+        run: cargo build --release --locked
+
+      # 资产名刻意不带版本号：README 里的 /releases/latest/download/ 直链需要固定文件名。
+      # 版本信息在 Release 页面和 tag 上已经有了。
+      - name: 打包
+        shell: pwsh
+        run: |
+          $out = "cross-next-x86_64-pc-windows-msvc"
+          New-Item -ItemType Directory -Path $out | Out-Null
+          # 五个二进制：服务端、排查工具、两个客户端、按键探测
+          foreach ($exe in "cross-next", "probe", "remote", "keyprobe", "listen") {
+            Copy-Item "target/release/$exe.exe" $out
+          }
+          Copy-Item README.md, LICENSE $out
+          Compress-Archive -Path $out -DestinationPath "$out.zip"
+
+      - uses: softprops/action-gh-release@v2
+        with:
+          files: cross-next-x86_64-pc-windows-msvc.zip
+          generate_release_notes: true
+          body: |
+            Windows x64。解压后哪个 exe 放哪台机器见 README 的「产物」表：
+
+            - `cross-next.exe` — 放音乐的那台，服务端，必需
+            - `listen.exe` / `remote.exe` — 鼠标所在的那台
+            - `probe.exe` / `keyprobe.exe` — 排查用，可选
+
+            只用浏览器遥控时只需 `cross-next.exe`，网页已编进 exe。
+
+            **必须在已登录的交互桌面会话里运行** —— 不能做成 Windows 服务，
+            也不能从 SSH 启动，那样 SMTC 读不到任何会话。

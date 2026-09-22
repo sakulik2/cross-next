@@ -20,6 +20,11 @@
 
 不支持搜索点播、播放队列、歌词 —— SMTC 不提供歌曲 ID、列表和歌词。
 
+## 下载
+
+[**最新版**](https://github.com/sakulik2/cross-next/releases/latest/download/cross-next-x86_64-pc-windows-msvc.zip)
+— Windows x64，解压即用，不需要装 Rust。
+
 ## 产物
 
 | 文件 | 运行在 | 用途 |
@@ -33,6 +38,8 @@
 只用浏览器遥控时只需 `cross-next.exe`。
 
 ## 运行
+
+下载的压缩包里已有编译好的 exe，直接跑 `cross-next.exe` 即可。从源码构建：
 
 ```sh
 cargo build --release

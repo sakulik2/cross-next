@@ -1,0 +1,52 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+# 同一分支的新 push 取消仍在跑的旧任务 —— Windows runner 慢，不值得为过时的提交排队。
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  check:
+    # 必须是 Windows：整个项目依赖 WinRT/Win32，别的平台连编译都过不去。
+    runs-on: windows-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
+
+      # Windows 上编译 windows crate 很慢，缓存值得加。
+      - uses: Swatinem/rust-cache@v2
+
+      # 快的先跑，失败早暴露。
+      - name: 格式
+        run: cargo fmt --all --check
+
+      # --locked 能抓出改了 Cargo.toml 却忘更新 Cargo.lock 的情况。
+      - name: Clippy
+        run: cargo clippy --all-targets --locked -- -D warnings
+
+      - name: 编译
+        run: cargo build --release --locked
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+
+      # 唯一能在 CI 跑的真实测试：只要 Node 和 stub DOM。
+      # 抓 render() 里的运行时错误 —— 那种 bug 会让后续更新静默失效。
+      - name: 前端渲染测试
+        run: node tests/render.mjs
+
+# 注意：CI 只能做编译和静态检查，做不了功能验证。
+# runner 上没有 QQ音乐、没有音频设备，而且是非交互会话 —— SMTC 在那里连
+# RequestAsync() 都可能抛 0x80070424。SMTC 传输控制、Core Audio 音量、
+# 媒体键注入、休眠抑制这四块只能在实机上验。

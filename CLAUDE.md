@@ -15,9 +15,21 @@ cargo build --release          # all five binaries
 cargo clippy --all-targets     # must stay at zero warnings
 cargo run --bin probe          # SMTC/audio-session diagnostics
 cargo run --bin keyprobe       # which channel media keys travel on
+node tests/render.mjs          # frontend render branches
 ```
 
-There is no test suite. Verification is done by running the real binaries against a live QQ音乐 instance (see "Verifying changes").
+What CI enforces on every push to `main` (`.github/workflows/ci.yml`, `windows-latest`) — run these before pushing:
+
+```sh
+cargo fmt --all --check
+cargo clippy --all-targets --locked -- -D warnings
+cargo build --release --locked
+node tests/render.mjs
+```
+
+`tests/render.mjs` is the only automated test, and it covers the frontend only. Everything on the Rust side — SMTC transport, Core Audio volume, media-key injection, sleep suppression — can only be verified by running the real binaries against a live QQ音乐 instance. CI cannot: its runner has no player, no audio device, and is a non-interactive session where SMTC may not even initialize. A green CI does not mean the features work.
+
+Releases are cut by pushing a `v*` tag (`.github/workflows/release.yml`). It checks the tag against `Cargo.toml`'s `version`, so bump that in the same commit as the tag. The zip's name deliberately carries no version — README links `/releases/latest/download/` with a fixed filename, so renaming the asset breaks that link.
 
 ## Binaries
 
@@ -66,7 +78,13 @@ These came from running the code against real QQ音乐; don't re-derive them.
 
 `web/index.html` is a single file embedded via `include_str!` — rebuild after editing it. Immersive large-cover layout; cover art drives a `--a`/`--b` CSS variable gradient (`pickColors` skips near-greyscale pixels so dark covers don't average to mud). Polls `/api/state` at 1s, updates optimistically on click.
 
-No test framework. To exercise render branches, extract the `<script>` block and `eval` it under a stubbed DOM in Node — stub `document.documentElement` and element `addEventListener`, and append the test code to the *same* `eval` string, since the page is strict-mode and function declarations stay eval-scoped. This catches runtime `ReferenceError`s that `node --check` cannot.
+`tests/render.mjs` exercises every `render()` branch: it extracts the `<script>` block and `eval`s it under a stubbed DOM in Node, no dependencies. Add a case there when you add a branch. Three things that will bite you when editing it:
+
+- The stub must grow with the page. Any new DOM API the page touches has to be stubbed or you get a fake failure — `document.documentElement` and element `addEventListener` were both missed on the first attempts.
+- Test code must be appended to the *same* `eval` string. The page is strict-mode, so function declarations inside an `eval` stay scoped to it; a separate `eval` yields `render is not defined`.
+- Regexes over `web/index.html` must tolerate CRLF. Git's `autocrlf` checks the file out with `\r\n` on Windows, so a hardcoded `\n` silently matches nothing.
+
+This catches runtime `ReferenceError`s that `node --check` cannot — and those matter here, because an exception partway through `render()` silently kills every update after it (one such bug broke the play icon and the cover art at the same time).
 
 ## Conventions
 
