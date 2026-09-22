@@ -185,6 +185,12 @@ cargo run --bin probe
 
 **不要将此端口转发到公网。**
 
+`config.json` 与 exe 同目录，按所在目录的权限继承 ACL。放在自己的用户目录下即可；
+解压到 `Program Files` 或其它所有用户可读的位置，等于把 token 摊给本机所有账户。
+
+`Host` 与绑定地址不符的请求直接拒绝（挡 DNS rebinding），响应带 `nosniff` 与
+CSP。单连接数、请求行长度、请求体大小都有上限，其中前两项在校验 token 之前生效。
+
 ## API
 
 除 `/` 外均需 token，走 `Authorization: Bearer <token>` 或 `?t=<token>`。

@@ -122,31 +122,42 @@ where
 }
 
 /// PID 反查进程名。
+///
+/// 用 `QueryFullProcessImageNameW` 而不是 `GetModuleBaseNameW`：后者要求句柄同时
+/// 具备 `PROCESS_QUERY_INFORMATION` 和 `PROCESS_VM_READ`，而前者只要
+/// `PROCESS_QUERY_LIMITED_INFORMATION`。权限要求低这一点是实质性的 ——
+/// QQ音乐 以管理员身份运行时，普通权限的 cross-next 拿不到 VM_READ，
+/// 于是查不出进程名，音量功能整个静默失效。
 fn process_name(pid: u32) -> Option<String> {
     use windows::Win32::Foundation::CloseHandle;
-    use windows::Win32::System::ProcessStatus::GetModuleBaseNameW;
     use windows::Win32::System::Threading::{
-        OpenProcess, PROCESS_QUERY_LIMITED_INFORMATION, PROCESS_VM_READ,
+        OpenProcess, PROCESS_NAME_WIN32, PROCESS_QUERY_LIMITED_INFORMATION,
+        QueryFullProcessImageNameW,
     };
+    use windows::core::PWSTR;
 
     unsafe {
-        // QUERY_LIMITED_INFORMATION 权限要求比 QUERY_INFORMATION 低，
-        // 对不同完整性级别的进程成功率更高。
-        let handle = OpenProcess(
-            PROCESS_QUERY_LIMITED_INFORMATION | PROCESS_VM_READ,
-            false,
-            pid,
-        )
-        .ok()?;
+        let handle = OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, false, pid).ok()?;
 
+        // 返回的是完整路径，容量按 MAX_PATH 给足。
         let mut buf = [0u16; 260];
-        let len = GetModuleBaseNameW(handle, None, &mut buf);
+        let mut len = buf.len() as u32;
+        let ok = QueryFullProcessImageNameW(
+            handle,
+            PROCESS_NAME_WIN32,
+            PWSTR(buf.as_mut_ptr()),
+            &mut len,
+        );
         let _ = CloseHandle(handle);
 
+        ok.ok()?;
         if len == 0 {
-            None
-        } else {
-            Some(String::from_utf16_lossy(&buf[..len as usize]))
+            return None;
         }
+
+        // 只要文件名部分 —— 调用方拿它和 target 做子串匹配，带上目录会让
+        // 安装路径里的字符串也参与匹配（"D:\QQMusic\other.exe" 会误命中）。
+        let full = String::from_utf16_lossy(&buf[..len as usize]);
+        Some(full.rsplit(['\\', '/']).next().unwrap_or(&full).to_string())
     }
 }

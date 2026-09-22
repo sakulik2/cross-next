@@ -479,6 +479,16 @@ function tick() {
 }
 requestAnimationFrame(tick);
 
+// 当前正被 <img> 使用的 blob URL。createObjectURL 建立的映射要显式释放，
+// 否则每次换歌泄漏一张图，挂一整天会积起可观的内存。
+let artUrl = null;
+
+// 释放上一张图的 blob URL。必须在新 URL 已经装上之后才调 ——
+// 提前释放会让 <img> 指向一个失效的 URL。
+function releaseArtUrl(url) {
+  if (url) URL.revokeObjectURL(url);
+}
+
 // 取封面。服务端的 ETag 是图片内容哈希，只有真的换了图才重绘。
 async function loadArt() {
   try {
@@ -488,16 +498,23 @@ async function loadArt() {
     const blob = await res.blob();
     if (!blob.size) throw new Error("空封面");
 
+    // 走 fetch 是为了带上 Authorization 头，<img src> 没法带。
+    const url = URL.createObjectURL(blob);
     const img = new Image();
     img.onload = () => {
       artEtag = etag;
-      els.artImg.src = img.src;
+      els.artImg.src = url;
       els.artImg.hidden = false;
       els.art.classList.remove("empty");
       applyColors(pickColors(img));
+      // 换上新图之后再放掉旧的。
+      const stale = artUrl;
+      artUrl = url;
+      releaseArtUrl(stale);
     };
-    // 走 fetch 是为了带上 Authorization 头，<img src> 没法带。
-    img.src = URL.createObjectURL(blob);
+    // 解码失败时这张图不会被用到，立刻放掉，别等下一次换歌。
+    img.onerror = () => { releaseArtUrl(url); };
+    img.src = url;
   } catch {
     artEtag = null;
     els.artImg.hidden = true;

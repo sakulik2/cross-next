@@ -64,9 +64,16 @@ globalThis.URL = class {
     this.hash = "";
   }
   static createObjectURL() {
-    return "blob:x";
+    globalThis.__blobsCreated++;
+    return "blob:" + globalThis.__blobsCreated;
+  }
+  // 封面换图要显式释放旧的 blob URL，测试靠这两个计数验证收支平衡。
+  static revokeObjectURL() {
+    globalThis.__blobsRevoked++;
   }
 };
+globalThis.__blobsCreated = 0;
+globalThis.__blobsRevoked = 0;
 globalThis.Image = class {
   set src(v) {
     this._s = v;
@@ -76,10 +83,12 @@ globalThis.Image = class {
     return this._s;
   }
 };
+// ETag 可变：封面的「同一张图就不重绘」和「换图要释放旧 blob」两条都依赖它变化。
+globalThis.__etag = '"etag"';
 globalThis.fetch = async () => ({
   ok: true,
   status: 200,
-  headers: { get: () => '"etag"' },
+  headers: { get: () => globalThis.__etag },
   blob: async () => ({ size: 10 }),
   json: async () => ({}),
 });
@@ -305,11 +314,60 @@ try {
   failed++;
 }
 
+// 换封面要放掉上一张的 blob URL。createObjectURL 建的映射不会自己消失，
+// 漏掉 revoke 的话每次换歌泄漏一张图，挂一天积起来很可观。
+//
+// loadArt 是异步的（fetch -> blob -> Image.onload），所以这一段要等一拍。
+// 导出成 promise 交给外层 await —— eval 里没法用顶层 await。
+globalThis.__blobCheck = (async () => {
+  const settle = () => new Promise((r) => realSetTimeout(r, 0));
+
+  // 上面的 render() 用例自己会触发 loadArt，先让那些跑完、把计数清零，
+  // 否则测的是它们的残留而不是这一段。
+  globalThis.__runTimers();
+  await settle();
+
+  // 先装一张图，让 artUrl 处于「已有」状态。缺了这一步，下面第一次换图没有
+  // 旧 URL 可放，revoke 的次数会少一次，期望值就跟运行顺序绑上了。
+  globalThis.__etag = '"art-prime"';
+  await loadArt();
+  await settle();
+
+  globalThis.__blobsCreated = 0;
+  globalThis.__blobsRevoked = 0;
+
+  for (const tag of ['"art-1"', '"art-2"', '"art-3"']) {
+    globalThis.__etag = tag;
+    await loadArt();
+    await settle();
+  }
+
+  // 换三次图：建三个 URL，同时应当放掉三个旧的（含 prime 那张）。
+  // 任何时刻只有一个 blob URL 活着。
+  if (globalThis.__blobsCreated !== 3) {
+    return "建立的 blob URL 数是 " + globalThis.__blobsCreated + "，期望 3";
+  }
+  if (globalThis.__blobsRevoked !== 3) {
+    return "只释放了 " + globalThis.__blobsRevoked + " 个 blob URL，期望 3 —— 换图时漏放旧的";
+  }
+  return null;
+})();
+
 globalThis.__failed = failed;
 `;
 
 eval(page + suite);
 
-const failed = globalThis.__failed;
+let failed = globalThis.__failed;
+
+// blob URL 的收支检查要等异步的 loadArt 跑完。
+const blobProblem = await globalThis.__blobCheck;
+if (blobProblem) {
+  console.log("  FAIL  封面换图释放 blob URL: " + blobProblem);
+  failed++;
+} else {
+  console.log("  ok    封面换图释放旧 blob URL");
+}
+
 console.log(failed ? `\n${failed} 个失败` : "\n全部通过");
 process.exit(failed ? 1 : 0);

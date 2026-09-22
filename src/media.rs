@@ -453,6 +453,15 @@ fn now_ticks() -> i64 {
 
 /// 拖动到指定位置（秒）。
 fn seek(manager: &SessionManager, target: &str, secs: f64) -> Reply {
+    // 先校验入参，再找会话：参数合法性与播放器在不在没有关系，反过来的话
+    // QQ音乐 没开时会用"不支持定位"盖掉真正的原因，排查时容易被误导。
+    //
+    // 位置来自请求，可能是 NaN 或 inf（JSON 里写 1e999 就会 parse 成 inf）。
+    // `as i64` 对这些值会饱和到边界值而不是报错，所以必须显式挡掉。
+    if !secs.is_finite() {
+        return Reply::Error("位置不是有限数值".into());
+    }
+
     let Ok(Some((session, _))) = find_session(manager, target) else {
         // mediakey 模式下没有会话，定位无从下手。
         return Reply::Error("当前通路不支持拖动定位".into());
@@ -464,7 +473,8 @@ fn seek(manager: &SessionManager, target: &str, secs: f64) -> Reply {
         .and_then(|t| t.StartTime())
         .map(|d| d.Duration)
         .unwrap_or(0);
-    let ticks = start + (secs.max(0.0) * 1e7) as i64;
+    // 饱和加法：start 通常是 0，但不保证，不该让它溢出。
+    let ticks = start.saturating_add((secs.max(0.0) * 1e7) as i64);
 
     match session
         .TryChangePlaybackPositionAsync(ticks)

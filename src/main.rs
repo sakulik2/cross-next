@@ -129,10 +129,13 @@ fn write_config(path: &PathBuf, c: &Config) -> std::io::Result<()> {
 /// 它是系统 CSPRNG，不必自己攒时间戳之类的弱种子。
 fn new_token() -> String {
     let mut bytes = [0u8; 32];
-    unsafe {
-        // ProcessPrng 恒返回 TRUE（文档明确保证），所以忽略返回值是安全的。
-        let _ = windows::Win32::Security::Cryptography::ProcessPrng(&mut bytes);
-    }
+    // 文档保证 ProcessPrng 恒返回 TRUE。但这是整个鉴权的唯一熵源 ——
+    // 万一那个保证不成立，静默的后果是 token 变成 64 个 0 且毫无征兆，
+    // 所以宁可在这里直接崩掉。检查的代价为零。
+    let ok = unsafe { windows::Win32::Security::Cryptography::ProcessPrng(&mut bytes) };
+    assert!(ok.as_bool(), "ProcessPrng 失败，无法生成安全的 token");
+    assert!(bytes.iter().any(|&b| b != 0), "熵源返回全零，拒绝使用");
+
     bytes.iter().map(|b| format!("{b:02x}")).collect()
 }
 

@@ -226,35 +226,43 @@ fn probe_audio() -> Result<()> {
 }
 
 /// PID 反查进程名。Core Audio 只认 PID，匹配进程名得自己做。
+///
+/// 与 `volume.rs` 保持一致：用 `QueryFullProcessImageNameW`，它只要
+/// `PROCESS_QUERY_LIMITED_INFORMATION`。换成 `GetModuleBaseNameW` 会额外需要
+/// `PROCESS_VM_READ`，对以管理员身份运行的进程会失败 —— 那样探针报"无法打开进程"，
+/// 而主程序其实也查不到，排查时容易误判成别的原因。
 fn cross_next_probe_process_name(pid: u32) -> String {
-    use windows::Win32::System::ProcessStatus::GetModuleBaseNameW;
     use windows::Win32::System::Threading::{
-        OpenProcess, PROCESS_QUERY_LIMITED_INFORMATION, PROCESS_VM_READ,
+        OpenProcess, PROCESS_NAME_WIN32, PROCESS_QUERY_LIMITED_INFORMATION,
+        QueryFullProcessImageNameW,
     };
+    use windows::core::PWSTR;
 
     if pid == 0 {
         return "<系统混音>".into();
     }
 
     unsafe {
-        // QUERY_LIMITED_INFORMATION 比 QUERY_INFORMATION 权限要求低，
-        // 对不同完整性级别的进程成功率更高。
-        let Ok(handle) = OpenProcess(
-            PROCESS_QUERY_LIMITED_INFORMATION | PROCESS_VM_READ,
-            false,
-            pid,
-        ) else {
+        let Ok(handle) = OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, false, pid) else {
             return "<无法打开进程>".into();
         };
 
         let mut buf = [0u16; 260];
-        let len = GetModuleBaseNameW(handle, None, &mut buf);
+        let mut len = buf.len() as u32;
+        let ok = QueryFullProcessImageNameW(
+            handle,
+            PROCESS_NAME_WIN32,
+            PWSTR(buf.as_mut_ptr()),
+            &mut len,
+        );
         let _ = windows::Win32::Foundation::CloseHandle(handle);
 
-        if len == 0 {
-            "<未知>".into()
-        } else {
-            String::from_utf16_lossy(&buf[..len as usize])
+        if ok.is_err() || len == 0 {
+            return "<未知>".into();
         }
+
+        // 只取文件名，与 volume.rs 的匹配口径一致。
+        let full = String::from_utf16_lossy(&buf[..len as usize]);
+        full.rsplit(['\\', '/']).next().unwrap_or(&full).to_string()
     }
 }

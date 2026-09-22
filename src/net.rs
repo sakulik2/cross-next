@@ -27,7 +27,10 @@ pub fn private_ipv4s() -> Vec<Ipv4Addr> {
     // 所以 ERROR_BUFFER_OVERFLOW 时重试几次。
     let mut size: u32 = 16 * 1024;
     for _ in 0..3 {
-        let mut buf = vec![0u8; size as usize];
+        // 缓冲用 u64 而非 u8：这块内存要当 IP_ADAPTER_ADDRESSES_LH 来读，那个结构
+        // 含指针，需要 8 字节对齐。`Vec<u8>` 的对齐是 1，拿它的指针去 cast 属于
+        // 未定义行为 —— 实际分配器给的地址通常恰好够齐，所以能跑，但不该依赖。
+        let mut buf = vec![0u64; size.div_ceil(8) as usize];
         let ret = unsafe {
             GetAdaptersAddresses(
                 AF_INET.0 as u32,
@@ -40,12 +43,15 @@ pub fn private_ipv4s() -> Vec<Ipv4Addr> {
 
         const ERROR_SUCCESS: u32 = 0;
         const ERROR_BUFFER_OVERFLOW: u32 = 111;
+        const ERROR_NO_DATA: u32 = 232;
 
         match ret {
             ERROR_SUCCESS => {
                 unsafe { collect(buf.as_ptr() as *const IP_ADAPTER_ADDRESSES_LH, &mut out) };
                 break;
             }
+            // 一个网卡都没有时 size 会被写成 0，缓冲是空的，指针不能解引用。
+            ERROR_NO_DATA => break,
             // size 已被写成所需大小，下一轮用它重试。
             ERROR_BUFFER_OVERFLOW => continue,
             _ => break,
