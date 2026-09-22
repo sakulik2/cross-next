@@ -1,0 +1,524 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
+<meta name="theme-color" content="#101014">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+<title>cross-next</title>
+<style>
+  /* 配色由封面主色驱动：JS 只改 --a / --b 两个变量，其余全部由它们推导。 */
+  :root {
+    --a: #2a2a35;
+    --b: #16161c;
+    --fg: #f4f4f7;
+    --dim: rgba(244,244,247,.62);
+    --faint: rgba(244,244,247,.13);
+  }
+
+  * { box-sizing: border-box; -webkit-tap-highlight-color: transparent; }
+
+  html, body { height: 100%; margin: 0; }
+
+  body {
+    display: grid;
+    place-items: center;
+    padding: max(20px, env(safe-area-inset-top)) 20px
+             max(20px, env(safe-area-inset-bottom));
+    font: 400 16px/1.5 system-ui, -apple-system, "Segoe UI", "Microsoft YaHei", sans-serif;
+    color: var(--fg);
+    background: var(--b);
+    overflow: hidden;
+  }
+
+  /* 背景渐变独立成层，这样换色时可以单独淡入淡出，不影响内容。 */
+  .bg {
+    position: fixed;
+    inset: -20%;
+    z-index: -1;
+    background:
+      radial-gradient(60% 60% at 30% 25%, var(--a), transparent 70%),
+      radial-gradient(55% 55% at 75% 75%, var(--a), transparent 70%),
+      var(--b);
+    filter: saturate(1.5);
+    transition: background 1.2s ease;
+  }
+
+  .card {
+    width: min(100%, 380px);
+    display: grid;
+    gap: 22px;
+    justify-items: center;
+    text-align: center;
+  }
+
+  /* 封面。aspect-ratio 保证正方形，不必等图片加载就能占好位。 */
+  .art {
+    position: relative;
+    width: min(74vw, 280px);
+    aspect-ratio: 1;
+    border-radius: 18px;
+    overflow: hidden;
+    background: var(--faint);
+    box-shadow: 0 24px 60px -12px rgba(0,0,0,.7);
+    transition: transform .45s cubic-bezier(.22,1,.36,1);
+  }
+  /* 暂停时封面缩一点，是"正在播放"最直观的视觉反馈。 */
+  body:not(.playing) .art { transform: scale(.93); }
+
+  .art img { width: 100%; height: 100%; object-fit: cover; display: block; }
+
+  /* 无封面时的占位符 */
+  .art::after {
+    content: "♪";
+    position: absolute;
+    inset: 0;
+    display: grid;
+    place-items: center;
+    font-size: 4rem;
+    color: var(--faint);
+    opacity: 0;
+    transition: opacity .3s;
+  }
+  .art.empty::after { opacity: 1; }
+
+  .meta { display: grid; gap: 6px; width: 100%; }
+
+  .title {
+    font-size: 1.28rem;
+    font-weight: 600;
+    letter-spacing: .01em;
+    /* 长曲名截断而不是换行，避免布局跳动。 */
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+  }
+
+  .artist {
+    color: var(--dim);
+    font-size: .95rem;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+  }
+
+  .controls {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    gap: 14px;
+  }
+
+  button {
+    border: 0;
+    background: var(--faint);
+    color: var(--fg);
+    border-radius: 50%;
+    display: grid;
+    place-items: center;
+    cursor: pointer;
+    /* 44px 是可点区域的下限，手机上按得准。 */
+    width: 56px; height: 56px;
+    transition: background .18s, transform .12s;
+  }
+  button:hover { background: rgba(244,244,247,.22); }
+  button:active { transform: scale(.9); }
+  button:focus-visible { outline: 2px solid var(--fg); outline-offset: 3px; }
+  button[disabled] { opacity: .35; cursor: not-allowed; }
+
+  /* 播放键做大，形成视觉重心 */
+  #play { width: 72px; height: 72px; background: var(--fg); color: #111; }
+  #play:hover { background: #fff; }
+
+  button svg { width: 24px; height: 24px; fill: currentColor; }
+  #play svg { width: 30px; height: 30px; }
+
+  .vol {
+    display: flex;
+    align-items: center;
+    gap: 12px;
+    width: 100%;
+    max-width: 280px;
+    color: var(--dim);
+  }
+  .vol svg { width: 20px; height: 20px; fill: currentColor; flex: none; }
+  .vol button { width: 32px; height: 32px; background: none; }
+  .vol button svg { width: 20px; height: 20px; }
+
+  input[type=range] {
+    flex: 1;
+    -webkit-appearance: none;
+    appearance: none;
+    height: 22px;
+    background: none;
+    cursor: pointer;
+  }
+  input[type=range]::-webkit-slider-runnable-track {
+    height: 4px;
+    border-radius: 2px;
+    background: var(--faint);
+  }
+  input[type=range]::-moz-range-track {
+    height: 4px; border-radius: 2px; background: var(--faint);
+  }
+  input[type=range]::-webkit-slider-thumb {
+    -webkit-appearance: none;
+    width: 14px; height: 14px;
+    margin-top: -5px;
+    border-radius: 50%;
+    background: var(--fg);
+  }
+  input[type=range]::-moz-range-thumb {
+    width: 14px; height: 14px; border: 0; border-radius: 50%; background: var(--fg);
+  }
+  input[type=range]:disabled { opacity: .35; cursor: not-allowed; }
+
+  /* 状态条：只在有话要说时占位置 */
+  .note {
+    min-height: 1.2em;
+    font-size: .8rem;
+    color: var(--dim);
+    transition: opacity .3s;
+  }
+  .note:empty { opacity: 0; }
+
+  /* 无障碍：尊重系统的减少动态偏好 */
+  @media (prefers-reduced-motion: reduce) {
+    * { transition: none !important; }
+  }
+</style>
+</head>
+<body>
+<div class="bg" id="bg"></div>
+
+<main class="card">
+  <div class="art empty" id="art">
+    <img id="artImg" alt="" hidden>
+  </div>
+
+  <div class="meta">
+    <div class="title" id="title">未连接</div>
+    <div class="artist" id="artist"></div>
+  </div>
+
+  <div class="controls">
+    <button id="prev" aria-label="上一首" title="上一首">
+      <svg viewBox="0 0 24 24"><path d="M7 6h2v12H7zm3 6 8.5 6V6z"/></svg>
+    </button>
+    <button id="play" aria-label="播放/暂停" title="播放/暂停">
+      <svg viewBox="0 0 24 24"><path id="playIcon" d="M8 5v14l11-7z"/></svg>
+    </button>
+    <button id="next" aria-label="下一首" title="下一首">
+      <svg viewBox="0 0 24 24"><path d="M15 6h2v12h-2zM5 18l8.5-6L5 6z"/></svg>
+    </button>
+  </div>
+
+  <div class="vol">
+    <button id="mute" aria-label="静音" title="静音">
+      <svg viewBox="0 0 24 24"><path id="volIcon" d="M3 9v6h4l5 5V4L7 9zm13.5 3a4.5 4.5 0 0 0-2.5-4v8a4.5 4.5 0 0 0 2.5-4z"/></svg>
+    </button>
+    <input type="range" id="vol" min="0" max="100" value="0"
+           aria-label="QQ音乐 音量" disabled>
+  </div>
+
+  <div class="note" id="note"></div>
+</main>
+
+<script>
+"use strict";
+
+// ---- token ----
+// 首次从 URL 的 ?t= 取，随后存 localStorage 并把它从地址栏抹掉，
+// 免得 token 留在浏览历史里。
+const KEY = "cross-next-token";
+const url = new URL(location.href);
+const fromUrl = url.searchParams.get("t");
+if (fromUrl) {
+  localStorage.setItem(KEY, fromUrl);
+  url.searchParams.delete("t");
+  history.replaceState(null, "", url.pathname + url.hash);
+}
+const token = localStorage.getItem(KEY) || "";
+
+const $ = (id) => document.getElementById(id);
+const els = {
+  bg: $("bg"), art: $("art"), artImg: $("artImg"),
+  title: $("title"), artist: $("artist"), note: $("note"),
+  play: $("play"), playIcon: $("playIcon"),
+  prev: $("prev"), next: $("next"),
+  vol: $("vol"), mute: $("mute"), volIcon: $("volIcon"),
+};
+
+const ICON = {
+  play: "M8 5v14l11-7z",
+  pause: "M6 5h4v14H6zm8 0h4v14h-4z",
+  loud: "M3 9v6h4l5 5V4L7 9zm13.5 3a4.5 4.5 0 0 0-2.5-4v8a4.5 4.5 0 0 0 2.5-4z",
+  muted: "M3 9v6h4l5 5V4L7 9zm16 1.4L17.6 9 16 10.6 14.4 9 13 10.4 14.6 12 13 13.6 14.4 15 16 13.4 17.6 15 19 13.6 17.4 12z",
+};
+
+async function api(path, opts = {}) {
+  const res = await fetch(path, {
+    ...opts,
+    headers: { ...(opts.headers || {}), Authorization: "Bearer " + token },
+  });
+  if (res.status === 401) throw new Error("token 无效，请用控制台打印的完整链接重新打开");
+  if (!res.ok) throw new Error("HTTP " + res.status);
+  return res;
+}
+
+// ---- 封面取色 ----
+// 把封面缩到 16x16 再统计，够准且开销可忽略。跳过接近黑白的像素，
+// 否则大面积深色背景的封面会算出一团灰，失去"跟着歌变脸"的效果。
+function pickColors(img) {
+  const N = 16;
+  const cv = document.createElement("canvas");
+  cv.width = cv.height = N;
+  const ctx = cv.getContext("2d", { willReadFrequently: true });
+  ctx.drawImage(img, 0, 0, N, N);
+
+  let data;
+  try {
+    data = ctx.getImageData(0, 0, N, N).data;
+  } catch {
+    return null; // 理论上同源不会污染画布，保险起见兜一下
+  }
+
+  const buckets = new Map();
+  for (let i = 0; i < data.length; i += 4) {
+    const r = data[i], g = data[i + 1], b = data[i + 2];
+    const max = Math.max(r, g, b), min = Math.min(r, g, b);
+    // 饱和度太低或明度过暗/过亮的像素不参与投票
+    if (max - min < 28 || max < 45 || min > 225) continue;
+    // 量化到 32 级，让相近颜色归到一个桶
+    const key = (r >> 5) * 64 + (g >> 5) * 8 + (b >> 5);
+    const acc = buckets.get(key) || [0, 0, 0, 0];
+    buckets.set(key, [acc[0] + r, acc[1] + g, acc[2] + b, acc[3] + 1]);
+  }
+
+  if (!buckets.size) return null;
+
+  const top = [...buckets.values()].sort((x, y) => y[3] - x[3])[0];
+  const [r, g, b] = [top[0] / top[3], top[1] / top[3], top[2] / top[3]];
+
+  // 主色调暗一档做渐变亮部，再压得更暗做底色，保证文字对比度始终够。
+  const mix = (v, t, k) => Math.round(v * (1 - k) + t * k);
+  return {
+    a: `rgb(${mix(r, 0, .18)},${mix(g, 0, .18)},${mix(b, 0, .18)})`,
+    b: `rgb(${mix(r, 8, .84)},${mix(g, 8, .84)},${mix(b, 10, .84)})`,
+  };
+}
+
+function applyColors(c) {
+  const root = document.documentElement.style;
+  root.setProperty("--a", c ? c.a : "#2a2a35");
+  root.setProperty("--b", c ? c.b : "#16161c");
+  document.querySelector('meta[name=theme-color]')
+    .setAttribute("content", c ? c.b : "#101014");
+}
+
+// ---- 状态同步 ----
+let lastTag = null;      // 已加载的封面标识，变了才重取图
+let pending = 0;         // 乐观更新后的宽限期，避免被旧快照回滚
+let volDragging = false; // 拖动音量时不让轮询覆盖滑杆位置
+let muted = false;       // 服务端报告的静音状态，静音键据此取反
+let artEtag = null;      // 已显示封面的内容哈希，用于判断图是否真的换了
+
+// volume 为 null 表示 QQ音乐 当前没有音频会话（没出声）。
+function renderVolume(s) {
+  const hasVol = s.volume !== null && s.volume !== undefined;
+  els.vol.disabled = !hasVol;
+  els.mute.disabled = !hasVol;
+  if (hasVol && !volDragging) els.vol.value = Math.round(s.volume * 100);
+  muted = !!s.muted;
+  els.volIcon.setAttribute("d", muted ? ICON.muted : ICON.loud);
+  return hasVol;
+}
+
+// 取封面。服务端的 ETag 是图片内容哈希，只有真的换了图才重绘。
+async function loadArt() {
+  try {
+    const res = await api("/api/thumbnail");
+    const etag = res.headers.get("ETag");
+    if (etag && etag === artEtag) return; // 同一张图，不必重绘
+    const blob = await res.blob();
+    if (!blob.size) throw new Error("空封面");
+
+    const img = new Image();
+    img.onload = () => {
+      artEtag = etag;
+      els.artImg.src = img.src;
+      els.artImg.hidden = false;
+      els.art.classList.remove("empty");
+      applyColors(pickColors(img));
+    };
+    // 走 fetch 是为了带上 Authorization 头，<img src> 没法带。
+    img.src = URL.createObjectURL(blob);
+  } catch {
+    artEtag = null;
+    els.artImg.hidden = true;
+    els.art.classList.add("empty");
+    applyColors(null);
+  }
+}
+
+function render(s) {
+  if (s.error) { els.note.textContent = s.error; return; }
+
+  if (!s.present) {
+    els.title.textContent = "QQ音乐 未在播放";
+    els.artist.textContent = "";
+    els.note.textContent = "打开 QQ音乐 并播放任意歌曲";
+    els.art.classList.add("empty");
+    els.artImg.hidden = true;
+    document.body.classList.remove("playing");
+    lastTag = null;
+    artEtag = null;
+    applyColors(null);
+    return;
+  }
+
+  // mediakey 模式：QQ音乐 没注册 SMTC，只能发全局媒体键，读不到任何元数据。
+  // 按键仍然有效，所以不该显示成"未连接"，而是明确说明当前的能力边界。
+  if (s.mode === "mediakey") {
+    els.title.textContent = "QQ音乐 正在播放";
+    els.artist.textContent = "此版本不提供曲目信息";
+    els.art.classList.add("empty");
+    els.artImg.hidden = true;
+    document.body.classList.add("playing");
+    lastTag = null;
+    artEtag = null;
+    applyColors(null);
+    renderVolume(s);
+    els.note.textContent = "媒体键模式：按键是全局的，若有其它播放器在放可能被抢走";
+    return;
+  }
+
+  els.title.textContent = s.title || "未知曲目";
+  els.artist.textContent = [s.artist, s.album].filter(Boolean).join(" · ");
+
+  // 乐观更新的宽限期内不接受服务端的播放状态，否则点下去会闪回。
+  if (!pending) {
+    document.body.classList.toggle("playing", s.playing);
+    els.playIcon.setAttribute("d", s.playing ? ICON.pause : ICON.play);
+  }
+
+  if (s.artTag && s.artTag !== lastTag) {
+    lastTag = s.artTag;
+    loadArt();
+    // SMTC 的缩略图有时比曲目元数据慢一拍，换歌瞬间取到的可能还是上一首的图。
+    // 过一会儿再核对一次，内容哈希没变就什么都不做。
+    setTimeout(loadArt, 1200);
+    setTimeout(loadArt, 3000);
+  }
+
+  const hasVol = renderVolume(s);
+
+  const notes = [];
+  if (!s.matched) notes.push("未锁定到 QQ音乐，当前控制的是：" + s.aumid);
+  if (!hasVol) notes.push("音量暂不可用（QQ音乐 未输出声音）");
+  els.note.textContent = notes.join("；");
+}
+
+async function poll() {
+  try {
+    const s = await (await api("/api/state")).json();
+    render(s);
+  } catch (e) {
+    els.note.textContent = e.message;
+  }
+}
+
+// ---- 操作 ----
+// 乐观更新：立刻改 UI，不等往返。局域网虽快，但一个来回的迟滞是能感觉到的。
+async function send(action) {
+  if (action === "playpause") {
+    const playing = !document.body.classList.contains("playing");
+    document.body.classList.toggle("playing", playing);
+    els.playIcon.setAttribute("d", playing ? ICON.pause : ICON.play);
+    pending++;
+    setTimeout(() => { pending--; }, 1200);
+  }
+
+  try {
+    const r = await (await api("/api/cmd", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ action }),
+    })).json();
+
+    // accepted=false 是 QQ音乐 拒绝了命令，如实说，不假装成功。
+    els.note.textContent = r.error ? r.error
+      : (r.accepted === false ? "QQ音乐 未接受这个操作" : "");
+    // 切歌后尽快刷新，别等下一个轮询周期。QQ音乐 更新 SMTC 元数据要些时间，
+    // 所以补几次而不是只查一次。
+    if (action !== "playpause") {
+      [200, 600, 1400].forEach((ms) => setTimeout(poll, ms));
+    }
+  } catch (e) {
+    els.note.textContent = e.message;
+  }
+}
+
+async function setVolume(level) {
+  try {
+    await api("/api/volume", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ level }),
+    });
+  } catch (e) {
+    els.note.textContent = e.message;
+  }
+}
+
+els.prev.onclick = () => send("prev");
+els.next.onclick = () => send("next");
+els.play.onclick = () => send("playpause");
+
+els.mute.onclick = async () => {
+  // 对服务端报告的状态取反，而不是从图标反推 —— 后者在首次渲染前读不到值。
+  const want = !muted;
+  muted = want;
+  els.volIcon.setAttribute("d", want ? ICON.muted : ICON.loud);
+  try {
+    await api("/api/volume", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ mute: want }),
+    });
+  } catch (e) {
+    els.note.textContent = e.message;
+  }
+};
+
+// 拖动时节流发送，松手后补一次终值，避免中途丢最后一个位置。
+let volTimer = null;
+els.vol.addEventListener("input", () => {
+  volDragging = true;
+  if (volTimer) return;
+  volTimer = setTimeout(() => {
+    volTimer = null;
+    setVolume(els.vol.value / 100);
+  }, 120);
+});
+els.vol.addEventListener("change", () => {
+  volDragging = false;
+  setVolume(els.vol.value / 100);
+});
+
+// 键盘快捷键：桌面上用起来顺手
+addEventListener("keydown", (e) => {
+  if (e.target.tagName === "INPUT") return;
+  const map = { ArrowLeft: "prev", ArrowRight: "next", " ": "playpause" };
+  const action = map[e.key];
+  if (action) { e.preventDefault(); send(action); }
+});
+
+poll();
+setInterval(poll, 1000);
+// 标签页切回前台时立刻刷新，不等轮询周期。
+addEventListener("visibilitychange", () => { if (!document.hidden) poll(); });
+</script>
+</body>
+</html>

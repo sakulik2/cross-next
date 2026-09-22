@@ -1,0 +1,44 @@
+[package]
+name = "cross-next"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+windows = { version = "0.62", features = ["Media_Control", "Media", "Foundation", "Foundation_Collections", "Storage_Streams", "Win32_Media_Audio", "Win32_System_Com", "Win32_System_Threading", "Win32_System_ProcessStatus", "Win32_NetworkManagement_IpHelper", "Win32_Networking_WinSock", "Win32_Foundation", "Win32_System_Com_StructuredStorage", "Win32_System_Variant", "Win32_NetworkManagement_Ndis", "Win32_Security_Cryptography", "Win32_UI_WindowsAndMessaging", "Win32_UI_HiDpi", "Win32_System_RemoteDesktop", "Win32_UI_Input_KeyboardAndMouse", "Win32_System_Console", "Win32_Graphics_Gdi"] }
+windows-future = "0.3"
+
+[[bin]]
+name = "cross-next"
+path = "src/main.rs"
+
+# 实机探针：照出 QQ音乐 真实的 AUMID / 进程名 / 音频会话，
+# 供 config.json 的 target 取值参考。见 README「首次配置」。
+[[bin]]
+name = "probe"
+path = "src/bin/probe.rs"
+
+[profile.release]
+opt-level = "z"
+lto = true
+strip = true
+panic = "abort"
+
+[lib]
+name = "cross_next"
+path = "src/lib.rs"
+
+# 一次性命令行客户端：给鼠标/键盘驱动的「启动程序」用。
+[[bin]]
+name = "remote"
+path = "src/bin/remote.rs"
+
+# 媒体键通路探测器：看鼠标驱动发的是键盘事件还是 WM_APPCOMMAND。
+[[bin]]
+name = "keyprobe"
+path = "src/bin/keyprobe.rs"
+
+# 常驻转发：抢下本机媒体键，转发给另一台机器。
+# 给只能绑预设媒体键、没有「启动程序」选项的鼠标驱动用。
+[[bin]]
+name = "listen"
+path = "src/bin/listen.rs"

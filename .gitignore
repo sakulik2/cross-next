@@ -1,0 +1,18 @@
+# ---- 编译输出 ----
+/target/
+
+# ---- 运行时生成，含共享 token，绝对不能进版本库 ----
+# 不带前导斜杠，所以任意层级（含测试用的临时目录）都会被忽略。
+config.json
+remote.json
+
+# ---- 运行/调试残留 ----
+*.log
+*.pdb
+
+# ---- 编辑器与系统 ----
+.vscode/
+.idea/
+*.swp
+Thumbs.db
+desktop.ini
