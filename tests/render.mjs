@@ -14,6 +14,8 @@ const root = join(dirname(fileURLToPath(import.meta.url)), "..");
 // ---- 最小 DOM stub ----
 // 页面每用一个新的 DOM API，这里就得跟着补。漏了会得到假失败 ——
 // 开发这套测试时就分别撞上过 document.documentElement 和元素的 addEventListener。
+// 监听器要记下来而不是丢掉：进度条冻结那个 bug 出在事件处理里，不在 render() 里，
+// 只调 render() 测不到它。记下来测试才能真的派发一次 pointerdown/pointerup。
 const el = () => ({
   textContent: "",
   hidden: false,
@@ -24,10 +26,18 @@ const el = () => ({
   setAttribute() {},
   getAttribute: () => null,
   style: { setProperty() {} },
-  addEventListener() {},
+  _on: {},
+  addEventListener(type, fn) {
+    (this._on[type] ??= []).push(fn);
+  },
+  fire(type, ev = {}) {
+    (this._on[type] || []).forEach((fn) => fn.call(this, ev));
+  },
 });
 
 const nodes = {};
+// 暴露给 eval 里的断言用 —— 有些用例要检查元素的最终状态，不只是「没抛异常」。
+globalThis.__nodes = nodes;
 globalThis.document = {
   getElementById: (id) => (nodes[id] ??= el()),
   querySelector: () => el(),
@@ -73,11 +83,33 @@ globalThis.fetch = async () => ({
   blob: async () => ({ size: 10 }),
   json: async () => ({}),
 });
-globalThis.addEventListener = () => {};
+// window 级监听器同样要记下来 —— pointerup 的解除逻辑挂在这里。
+const winOn = {};
+globalThis.addEventListener = (type, fn) => {
+  (winOn[type] ??= []).push(fn);
+};
+globalThis.__fireWindow = (type, ev = {}) => {
+  (winOn[type] || []).forEach((fn) => fn(ev));
+};
 globalThis.setInterval = () => 0;
-// 进度条插值要用
-globalThis.performance = { now: () => 1000 };
+// 进度条插值要用。now 可推进，这样才能验证播放中的外推。
+let fakeNow = 1000;
+globalThis.performance = { now: () => fakeNow };
+globalThis.__advance = (ms) => { fakeNow += ms; };
 globalThis.requestAnimationFrame = () => 0;
+// pointerup 的解除是延迟一拍做的，测试要能把它推进完。
+globalThis.__timers = [];
+const realSetTimeout = globalThis.setTimeout;
+globalThis.setTimeout = (fn, ms) => {
+  // 0ms 的留给 Image.onload 之类的真异步，其余记下来由测试显式跑。
+  if (ms) { globalThis.__timers.push(fn); return 0; }
+  return realSetTimeout(fn, ms);
+};
+globalThis.__runTimers = () => {
+  const ts = globalThis.__timers;
+  globalThis.__timers = [];
+  ts.forEach((fn) => fn());
+};
 
 // ---- 抽出页面脚本 ----
 const html = readFileSync(join(root, "web", "index.html"), "utf8");
@@ -160,6 +192,58 @@ for (const [input, want] of times) {
 }
 if (timeBad === 0) console.log("  ok    fmtTime 六个边界");
 failed += timeBad;
+
+// canSeek=false 仍要能拖。QQ音乐 上报的能力位不可信（报 false 却真的能跳），
+// 照它禁用滑杆等于白废一个能用的功能。这条守着别人「照能力位禁用」改回去。
+try {
+  render({ present: true, mode: "smtc", matched: true, playing: true,
+           title: "歌", artTag: "s1", position: 30, duration: 200, canSeek: false });
+  const bar = globalThis.__nodes["seekBar"];
+  if (bar.disabled) {
+    console.log("  FAIL  canSeek=false 时滑杆被禁用了 —— 能力位不可信，不该照它禁用");
+    failed++;
+  } else {
+    console.log("  ok    canSeek=false 仍可拖动");
+  }
+} catch (e) {
+  console.log("  FAIL  canSeek=false 仍可拖动: " + e.message);
+  failed++;
+}
+
+// 原地点一下进度条（pointerdown 后没有 change）不该让进度条永久冻结。
+//
+// 这是实际发生过的 bug：seekDragging 只在 change 里清，而值没变时 change 不触发，
+// 于是标志永久卡在 true，paint() 从此直接返回。表现是 elapsed 冻在按下那一刻、
+// total 仍随轮询更新，换歌后就成了 3:41/2:01 —— 前半截还是上一首的进度。
+//
+// 必须真的派发事件：bug 在事件处理里，只调 render() 测不到。
+try {
+  const bar = globalThis.__nodes["seekBar"];
+  const elapsed = globalThis.__nodes["elapsed"];
+
+  render({ present: true, mode: "smtc", matched: true, playing: true,
+           title: "长的", artTag: "t-long", position: 221, duration: 332, canSeek: false });
+  const frozen = elapsed.textContent;
+
+  // 原地按下再松开，不改变 value，所以不会有 change 事件。
+  bar.fire("pointerdown");
+  globalThis.__fireWindow("pointerup");
+  globalThis.__runTimers(); // 跑掉解除标志的那一拍
+
+  // 换一首短歌。若标志还卡着，elapsed 会留在上一首的 3:41。
+  render({ present: true, mode: "smtc", matched: true, playing: true,
+           title: "短的", artTag: "t-short", position: 3, duration: 121, canSeek: false });
+
+  if (elapsed.textContent === frozen) {
+    console.log("  FAIL  原地点击后进度条冻结：换歌了 elapsed 仍是 " + frozen);
+    failed++;
+  } else {
+    console.log("  ok    原地点击不会冻结进度条");
+  }
+} catch (e) {
+  console.log("  FAIL  原地点击不会冻结进度条: " + e.constructor.name + ": " + e.message);
+  failed++;
+}
 
 // 模式来回切换：状态不该残留（封面 etag、进度条可见性等）
 try {

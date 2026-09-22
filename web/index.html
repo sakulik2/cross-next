@@ -385,8 +385,10 @@ function renderSeek(s) {
   if (!has) { track = null; return; }
 
   track = { position: s.position, duration: s.duration, playing: !!s.playing, at: performance.now() };
-  // canSeek 为 false 时仍显示进度，只是禁止拖动。
-  els.seekBar.disabled = !s.canSeek;
+  // 刻意不按 canSeek 禁用滑杆。QQ音乐 上报的能力位不可信 —— 实测它报
+  // IsPlaybackPositionEnabled=false，而 TryChangePlaybackPositionAsync 照样
+  // 返回 accepted=true 并真的跳了过去。照能力位禁用等于白白废掉一个能用的功能。
+  // 和播放键同一套做法：命令照发，应用拒绝就如实报出来。
   els.total.textContent = fmtTime(s.duration);
   paint();
 }
@@ -589,6 +591,18 @@ els.vol.addEventListener("change", () => {
 // 拖动进度：按下即接管显示，松手才发命令。拖动过程中不发 —— 一次 seek
 // 就够了，中途连发会让播放器来回跳。
 els.seekBar.addEventListener("pointerdown", () => { seekDragging = true; });
+
+// 松手必须无条件解除接管。只靠 change 事件解除是不够的：原地点一下不改变值时
+// change 根本不触发，seekDragging 就永久卡在 true，paint() 从此直接返回 ——
+// 进度条冻结在按下那一刻，而 total 仍随轮询更新，于是出现 3:41/2:01 这种
+// 已经换了歌、前半截还是上一首进度的画面。
+//
+// 延迟一拍是给 change 让路：range 的 change 紧跟 pointerup，它会把 track
+// 乐观更新到新位置。这里先清标志的话，中间那一帧会用旧位置重绘，看着像回跳。
+addEventListener("pointerup", () => {
+  if (seekDragging) setTimeout(() => { seekDragging = false; }, 150);
+});
+addEventListener("pointercancel", () => { seekDragging = false; });
 
 els.seekBar.addEventListener("input", () => {
   if (!track) return;
