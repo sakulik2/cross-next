@@ -11,8 +11,8 @@ use windows::Media::Control::GlobalSystemMediaTransportControlsSessionManager as
 // windows-future 的 Async trait 是私有的，没有公开的阻塞 get()，自己写了一个。
 use cross_next::winrt_block::block_on;
 use windows::Win32::Media::Audio::{
-    IAudioSessionControl2, IAudioSessionManager2, IMMDeviceEnumerator, MMDeviceEnumerator,
-    eMultimedia, eRender,
+    AudioSessionStateActive, IAudioSessionControl2, IAudioSessionManager2, IMMDeviceEnumerator,
+    MMDeviceEnumerator, eMultimedia, eRender,
 };
 use windows::Win32::System::Com::{
     CLSCTX_ALL, COINIT_MULTITHREADED, CoCreateInstance, CoInitializeEx,
@@ -214,9 +214,21 @@ fn probe_audio() -> Result<()> {
             let pid = ctrl2.GetProcessId().unwrap_or(0);
             let name = cross_next_probe_process_name(pid);
 
+            // 会话状态是 mediakey 模式下唯一的播放信号（没有 SMTC 就没有
+            // PlaybackStatus），休眠抑制靠它。Active 才算在出声。
+            let state = match ctrl2.GetState() {
+                Ok(s) if s == AudioSessionStateActive => "Active（在出声）",
+                Ok(s) => match s.0 {
+                    0 => "Inactive（未出声）",
+                    2 => "Expired（进程已退出）",
+                    _ => "未知",
+                },
+                Err(_) => "<读取失败>",
+            };
+
             // 同一个应用可能占多个音频会话（浏览器分标签是典型），
             // 所以主程序设置音量时要对所有匹配项都设置，不能只改第一个。
-            println!("  pid={pid:<6} 进程={name}");
+            println!("  pid={pid:<6} 状态={state:<20} 进程={name}");
         }
 
         println!("\n  共 {count} 个音频会话");

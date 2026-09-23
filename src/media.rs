@@ -342,6 +342,10 @@ fn snapshot(manager: &SessionManager, target: &str) -> Result<Snapshot> {
                 present: true,
                 mode: Mode::MediaKey,
                 matched_target: true,
+                // 这条通路没有 SMTC，播放状态只能看音频会话是否在出声。必须如实填 ——
+                // 早先这里走 `..Default::default()`，playing 恒为 false，于是 mediakey
+                // 模式下休眠抑制从未生效，而前端那时显示的是「QQ音乐 正在播放」。
+                playing: state.active,
                 volume: Some(state.level),
                 muted: Some(state.muted),
                 ..Default::default()
