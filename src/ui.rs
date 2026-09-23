@@ -6,6 +6,13 @@
 
 use std::sync::OnceLock;
 
+/// 版本号，编译期从 `Cargo.toml` 取。
+///
+/// 五个 binary 共享它，所以「发布了但忘了 bump」不会在这里分叉 —— 那个错误由
+/// release 工作流的守卫拦（见 CLAUDE.md）。暴露版本号的实际用处是更新之后能确认
+/// 跑的到底是哪一份:exe 被覆盖了但旧进程还在跑,光看文件时间戳判断不出来。
+pub const VERSION: &str = env!("CARGO_PKG_VERSION");
+
 /// 本进程是否有可用的控制台。
 ///
 /// 窗口子系统程序默认没有控制台，`AttachConsole(ATTACH_PARENT_PROCESS)` 能借用

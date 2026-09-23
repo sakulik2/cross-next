@@ -34,6 +34,35 @@ fn main() {
     // 必须在创建任何窗口（消息框、托盘）之前。
     ui::init_dpi();
 
+    // 更新之后确认跑的是哪一份 —— exe 覆盖了但旧进程还在跑时，文件时间戳看不出来。
+    // 排在 --stop 之前：两个都给的话先答版本，不会顺手把服务停掉。
+    //
+    // 注意脚本**不要**读这个输出：窗口子系统程序在 PowerShell 里用 `&` 调用抓不到
+    // stdout，而且没有控制台时 ui::report 会弹模态框把脚本永久挂住。比文件哈希。
+    if std::env::args()
+        .skip(1)
+        .any(|a| a == "--version" || a == "-V")
+    {
+        ui::report(TITLE, &format!("cross-next {}", ui::VERSION));
+        return;
+    }
+
+    // `--stop` 只关掉在跑的实例然后退出，不启动新的。为更新准备：运行中的 exe
+    // 被系统锁着，覆盖之前必须先让它退出。手点托盘的「退出」效果相同，但没法写脚本。
+    //
+    // 刻意不做成「启动时自动接管」（`listen.exe` 那套）：那个进程没有界面，用户看不见
+    // 也关不掉，接管是唯一体面的出路；服务端有托盘图标，静默顶掉一个正在服务的实例
+    // 是帮倒忙，还会破坏下面 AddrInUse 提示里「改 port 再开一个」的用法。
+    if std::env::args().skip(1).any(|a| a == "--stop") {
+        let msg = if tray::stop_running() {
+            "已关闭正在运行的 cross-next。"
+        } else {
+            "没有正在运行的 cross-next。"
+        };
+        ui::report(TITLE, msg);
+        return;
+    }
+
     let path = config_path();
     let (config, created) = match load_or_create(&path) {
         Ok(c) => c,
@@ -58,8 +87,9 @@ fn main() {
             // 所以说清楚，不要只丢一句系统错误。
             let hint = if e.kind() == std::io::ErrorKind::AddrInUse {
                 format!(
-                    "\n\n端口被占用 —— 通常是已经开着一个 cross-next 了（看托盘图标）。\n\
-                     确实要再开一个就改 {} 里的 port。",
+                    "\n\n端口被占用 —— 通常是已经开着一个 cross-next 了（看托盘图标）。\n\n\
+                     要换掉它就先 cross-next.exe --stop，或从托盘退出。\n\
+                     确实要同时开两个就改 {} 里的 port。",
                     path.display()
                 )
             } else {
@@ -74,7 +104,7 @@ fn main() {
     let remote = media::spawn(config.target.clone());
 
     // 这些只在从命令行启动时可见（窗口子系统下双击没有控制台），正好用于首次配置。
-    println!("cross-next 已启动");
+    println!("cross-next {} 已启动", ui::VERSION);
     println!();
     println!("  在笔记本或手机浏览器打开：");
     println!("    http://{addr}/?t={}", config.token);

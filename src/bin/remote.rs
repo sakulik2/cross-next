@@ -32,6 +32,12 @@ fn main() {
         return;
     }
 
+    // 放在 dispatch 之前，不然 --version 会被当成一条命令发给服务端。
+    if args.iter().any(|a| a == "--version" || a == "-V") {
+        ui::report(TITLE, &format!("cross-next remote {}", ui::VERSION));
+        return;
+    }
+
     let config = match client::load_config() {
         Ok(c) => c,
         Err(e) => {

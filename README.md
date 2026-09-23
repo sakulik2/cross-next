@@ -35,6 +35,7 @@
 | `remote.exe` | 鼠标所在的机器 | 一次性命令 |
 | `probe.exe` | 放音乐的机器 | 排查 SMTC 与音频会话 |
 | `keyprobe.exe` | 鼠标所在的机器 | 排查按键通路 |
+| `update.ps1` | 放音乐的机器 | 原地更新，见「更新」 |
 
 只用浏览器遥控时只需 `cross-next.exe`。
 
@@ -73,13 +74,31 @@ cargo build --release
 页面提示 token 无效时，直接在页面上粘贴 `config.json` 里的 token 即可，不必回控制台找链接。
 整行 `"token": "..."` 也认，不用自己剥引号。
 
-升级保留 `config.json` 就不会换 token。解压到新目录会生成新的 —— 把旧的 `config.json`
-带过去，或直接覆盖旧目录。
-
 **必须在已登录的交互桌面会话里运行。** SMTC 会话按 Windows 登录会话隔离：非交互会话中
 `GetSessions()` 返回空，Win11 上 `RequestAsync()` 抛 `0x80070424`。不能做成 Windows 服务，
 也不能从 SSH 启动。开机自启用 `shell:startup` 快捷方式，或「仅在用户登录时运行」的计划任务 ——
 没有控制台窗口，自启后只在托盘留一个图标。
+
+### 更新
+
+压缩包里带 `update.ps1`，在 exe 所在目录跑它：
+
+```sh
+powershell -ExecutionPolicy Bypass -File update.ps1
+```
+
+取最新发布，停掉在跑的 `cross-next.exe` 与 `listen.exe`，覆盖 exe，再按原样重启 ——
+更新前没在跑的不会被启动。先下载校验再停服务，所以网断了或包坏了只是没更新成，
+服务照旧。已经是最新版时直接跳过，不会白停一次。
+
+手动更新等效于：`cross-next.exe --stop`（运行中的 exe 被系统锁着，覆盖前必须先退出），
+解压覆盖，重新启动。`--stop` 只关不启，效果和托盘菜单的「退出」一样，区别是能写进脚本。
+
+`config.json` 不在压缩包里，所以覆盖不会动它，token 不变，浏览器和 `remote.json` 那两份
+副本继续有效。解压到**新目录**才会生成新 token —— 那种情况把旧的 `config.json` 带过去。
+
+确认在跑的是哪一版：`cross-next.exe --version`（`listen.exe`、`remote.exe` 同样支持，
+两个探针打在横幅里）。托盘图标的悬停提示也带版本号 —— 双击启动看不到横幅，那里是唯一的出处。
 
 ### config.json
 

@@ -4,8 +4,13 @@
 //! 子系统之后所有 `println!` 在双击运行时都无声，而启动横幅本来是用户拿到访问 URL
 //! 的唯一途径 —— 所以托盘不只是"好看"，它是替代那条途径的：右键菜单里能取回地址。
 //!
-//! 刻意**不做**单实例标记窗口（`listen.exe` 那套）：端口绑定天然独占，
-//! 第二个实例在 `http::bind` 就会拿到 `AddrInUse`，那里已经有对应提示。
+//! 启动时刻意**不**接管已有实例（`listen.exe` 那套）：端口绑定天然独占，第二个实例
+//! 在 `http::bind` 就会拿到 `AddrInUse`，那里已经有对应提示。`listen` 需要接管是因为
+//! 它没有界面、用户看不见也关不掉；服务端有托盘图标，重复启动时静默顶掉一个正在
+//! 服务的实例是帮倒忙，而且会破坏「改 port 再开一个」这种明确支持的用法。
+//!
+//! 但托盘窗口的类名兼作单实例锚点，供 `--stop` 用 —— 见 [`stop_running`]。换 exe 前
+//! 得先让旧进程松开文件锁，那是唯一真正需要「关掉它」的场景。
 //!
 //! 几个踩过的点：
 //!
@@ -67,6 +72,52 @@ static ICON: AtomicIsize = AtomicIsize::new(0);
 
 /// `TaskbarCreated` 的消息号，`RegisterWindowMessageW` 在运行时才给得出。
 static TASKBAR_CREATED: AtomicU32 = AtomicU32::new(0);
+
+/// 关掉正在运行的实例，返回是否真的关了一个。
+///
+/// 给 `--stop` 用。存在的理由只有一个：解压覆盖 `cross-next.exe` 之前得让旧进程松开
+/// 文件锁 —— 运行中的 exe 是被锁住的，直接覆盖会失败。手点托盘的「退出」效果一样，
+/// 但那没法写进脚本。
+///
+/// 发 `WM_CLOSE` 而不是强杀：旧实例走正常退出路径才会 `NIM_DELETE` 摘掉托盘图标，
+/// 强杀会留一个幽灵图标，得等鼠标划过去系统才发现进程没了。同理也刻意不按进程名
+/// 匹配 —— 类名只会命中我们自己。
+///
+/// 注意这里找的是**任意**一个实例，不区分端口。多开（改 port）的情况下每次只关一个，
+/// 反复调用即可逐个关掉。这是 `FindWindowW` 的能力边界，而多开本身是罕见用法。
+pub fn stop_running() -> bool {
+    use windows::Win32::UI::WindowsAndMessaging::{FindWindowW, WM_CLOSE};
+
+    let found = unsafe { FindWindowW(CLASS_NAME, None) };
+    let Ok(existing) = found else {
+        return false; // 没有在跑的实例
+    };
+    if existing.is_invalid() {
+        return false;
+    }
+
+    if unsafe { PostMessageW(Some(existing), WM_CLOSE, WPARAM(0), LPARAM(0)) }.is_err() {
+        return false;
+    }
+
+    // 等它真的退出。轮询窗口是否消失，比睡一个固定时长可靠 —— 调用方紧接着就要
+    // 覆盖 exe 文件，返回太早的话文件锁还没放开。
+    //
+    // 窗口消失只说明消息循环收摊了，进程退出还差一瞬；不过 exe 的锁是内核随进程
+    // 对象释放的，这点延迟由调用方的文件操作自然吸收（更新脚本总要解压）。
+    for _ in 0..100 {
+        std::thread::sleep(std::time::Duration::from_millis(20));
+        match unsafe { FindWindowW(CLASS_NAME, None) } {
+            Ok(h) if !h.is_invalid() => continue,
+            _ => return true,
+        }
+    }
+
+    // 超时：旧实例卡住了（HTTP 线程阻塞在某个 WinRT 调用上也可能拖住退出）。
+    // 仍然返回 true —— 我们确实找到并通知了一个实例，让调用方据此继续，
+    // 覆盖失败时的文件错误比这里含糊的布尔值更能说明问题。
+    true
+}
 
 /// 起托盘并跑消息循环。用户选「退出」时返回。
 ///
@@ -206,7 +257,11 @@ fn notify_data(hwnd: HWND) -> NOTIFYICONDATAW {
 
     // tooltip 只给不带 token 的地址：鼠标划过去就能看到的东西不该含凭据。
     if let Some(ctx) = CTX.get() {
-        let tip: Vec<u16> = format!("cross-next  {}", ctx.bare).encode_utf16().collect();
+        // 带上版本号：双击启动的用户看不到横幅，这是他们唯一能看到版本的地方，
+        // 而更新之后「到底换没换成」正是要确认的事。
+        let tip: Vec<u16> = format!("cross-next {}  {}", ui::VERSION, ctx.bare)
+            .encode_utf16()
+            .collect();
         // szTip 要以 NUL 结尾，所以最多只填 len-1 个字符。
         let n = tip.len().min(data.szTip.len() - 1);
         data.szTip[..n].copy_from_slice(&tip[..n]);

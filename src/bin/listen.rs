@@ -70,6 +70,16 @@ fn main() {
     // 必须在创建任何窗口之前。
     ui::init_dpi();
 
+    // 同 cross-next：更新后确认跑的是哪一份。放在接管旧实例之前，
+    // 问个版本不该顺手把正在转发的实例顶掉。
+    if std::env::args()
+        .skip(1)
+        .any(|a| a == "--version" || a == "-V")
+    {
+        ui::report(TITLE, &format!("cross-next listen {}", ui::VERSION));
+        return;
+    }
+
     let stop_only = std::env::args().skip(1).any(|a| a == "--stop");
 
     // 先接管旧实例。它退出时会 UnregisterHotKey，所以必须在我们注册之前做完。
@@ -323,7 +333,7 @@ fn pump(
 
 fn announce(target: &str, registered: &[(i32, &str)], replaced: bool) {
     // 窗口子系统下这些 println 只在从命令行启动时可见，正好用于首次验证。
-    println!("cross-next 媒体键转发已启动");
+    println!("cross-next 媒体键转发 {} 已启动", ui::VERSION);
     if replaced {
         println!("  （已接管上一个实例）");
     }

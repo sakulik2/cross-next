@@ -52,6 +52,9 @@ jobs:
             Copy-Item "target/release/$exe.exe" $out
           }
           Copy-Item README.md, LICENSE $out
+          # 更新脚本必须随包发 —— 它靠 $PSScriptRoot 定位安装目录，只有躺在
+          # exe 旁边才知道要更新哪一份。
+          Copy-Item tools/update.ps1 $out
           Compress-Archive -Path $out -DestinationPath "$out.zip"
 
       - uses: softprops/action-gh-release@v3

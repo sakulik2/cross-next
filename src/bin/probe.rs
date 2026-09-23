@@ -21,7 +21,8 @@ use windows::core::Interface; // IAudioSessionControl -> IAudioSessionControl2 �
 use windows::core::Result;
 
 fn main() {
-    println!("cross-next 探针\n");
+    // 横幅带版本号：探针的输出常被整段粘出来排查，那时「跑的是哪一版」是必要前提。
+    println!("cross-next 探针 {}\n", cross_next::ui::VERSION);
 
     // 会话隔离是「一个 SMTC 会话都没有」最常见的成因，先判定它。
     diagnose_session();

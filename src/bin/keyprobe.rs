@@ -36,7 +36,8 @@ static SHELL_MSG: AtomicU32 = AtomicU32::new(0);
 const HSHELL_APPCOMMAND: u32 = 12;
 
 fn main() {
-    println!("cross-next 媒体键探测器\n");
+    // 同 probe：输出会被粘出来排查，版本号是前提。
+    println!("cross-next 媒体键探测器 {}\n", cross_next::ui::VERSION);
     println!("现在按鼠标侧键（或键盘媒体键），看下面哪条通路有反应。");
     println!("Ctrl+C 退出。\n");
 
