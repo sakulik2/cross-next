@@ -38,6 +38,11 @@ jobs:
       - name: 编译
         run: cargo build --release --locked
 
+      # Rust 侧只有纯逻辑的单元测试（如托盘图标的 ICO 字节解析）。凡是要碰
+      # SMTC / 音频设备 / 消息循环的都测不了，见文件末尾的说明。
+      - name: Rust 单元测试
+        run: cargo test --locked
+
       # 这个版本号是跑测试用的 Node，和 action 自身的运行时是两回事。
       - uses: actions/setup-node@v5
         with:
@@ -51,4 +56,5 @@ jobs:
 # 注意：CI 只能做编译和静态检查，做不了功能验证。
 # runner 上没有 QQ音乐、没有音频设备，而且是非交互会话 —— SMTC 在那里连
 # RequestAsync() 都可能抛 0x80070424。SMTC 传输控制、Core Audio 音量、
-# 媒体键注入、休眠抑制这四块只能在实机上验。
+# 媒体键注入、休眠抑制这四块只能在实机上验。托盘图标同理：
+# 图标能不能显示、菜单点不点得动，runner 上都看不出来。

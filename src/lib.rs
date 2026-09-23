@@ -7,6 +7,8 @@ pub mod keepawake;
 pub mod media;
 pub mod mediakey;
 pub mod net;
+pub mod tray;
+pub mod ui;
 pub mod volume;
 pub mod watch;
 pub mod winrt_block;

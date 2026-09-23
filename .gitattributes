@@ -1,0 +1,5 @@
+# 仓库在 autocrlf=true 的 Windows 上开发，而 assets/*.ico 是编进 exe 的二进制产物
+# （tray.rs 用 include_bytes! 读它）。Git 的二进制探测目前认得出它，但那是启发式的 ——
+# 显式标成 binary，免得哪天换个图标恰好躲过探测、被做 CRLF 转换，最后得到一个
+# 字节被改坏、图标神秘不显示的 exe。
+*.ico binary

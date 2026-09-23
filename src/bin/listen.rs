@@ -31,7 +31,7 @@
 
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
-use cross_next::{client, watch};
+use cross_next::{client, ui, watch};
 use std::sync::Arc;
 use std::sync::mpsc::{Sender, channel};
 use windows::Win32::Foundation::{HWND, LPARAM, LRESULT, WPARAM};
@@ -56,6 +56,9 @@ const BINDINGS: [(i32, u16, &str, &str); 3] = [
 /// 隐藏标记窗口的类名。够独特，不会和别的程序撞。
 const MARKER_CLASS: windows::core::PCWSTR = w!("CrossNextListenMarker");
 
+/// 消息框标题。
+const TITLE: &str = "cross-next listen";
+
 /// 监视线程发给主线程的自定义消息。
 ///
 /// 热键只能由注册它的线程释放，所以让出/抢回必须回到主线程做 ——
@@ -64,15 +67,8 @@ const WM_APP_YIELD: u32 = windows::Win32::UI::WindowsAndMessaging::WM_APP + 1;
 const WM_APP_RECLAIM: u32 = windows::Win32::UI::WindowsAndMessaging::WM_APP + 2;
 
 fn main() {
-    // 声明 DPI 感知，否则高分屏上消息框会被系统按 96 DPI 渲染再放大，字发虚。
-    // 必须在创建任何窗口之前调用。
-    unsafe {
-        use windows::Win32::UI::HiDpi::{
-            DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2, SetProcessDpiAwarenessContext,
-        };
-        // 失败不影响功能（只是显示模糊），所以忽略返回值。
-        let _ = SetProcessDpiAwarenessContext(DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2);
-    }
+    // 必须在创建任何窗口之前。
+    ui::init_dpi();
 
     let stop_only = std::env::args().skip(1).any(|a| a == "--stop");
 
@@ -85,7 +81,7 @@ fn main() {
         } else {
             "没有正在运行的 listen.exe。"
         };
-        report(msg);
+        ui::report(TITLE, msg);
         return;
     }
 
@@ -93,7 +89,7 @@ fn main() {
     let config = match client::load_config() {
         Ok(c) => c,
         Err(e) => {
-            fail(&e);
+            ui::fail(TITLE, &e);
             return;
         }
     };
@@ -105,7 +101,7 @@ fn main() {
     let marker = match create_marker() {
         Some(h) => h,
         None => {
-            fail("无法创建标记窗口，无法保证单实例。");
+            ui::fail(TITLE, "无法创建标记窗口，无法保证单实例。");
             return;
         }
     };
@@ -122,7 +118,8 @@ fn main() {
         let _ = unsafe { DestroyWindow(marker) };
         // 走到这里说明占用方不是我们自己的实例（那个已经被关掉了）。
         // Win32 查不出热键属于谁，所以只能列出常见的占用方。
-        fail(
+        ui::fail(
+            TITLE,
             "媒体键全部注册失败 —— 被其它程序独占了。\n\n\
              常见占用方：播放器的全局热键设置、键盘厂商驱动、其它媒体控制小工具。",
         );
@@ -346,45 +343,4 @@ fn announce(target: &str, registered: &[(i32, &str)], replaced: bool) {
     println!();
     println!("  这些键现在只控制台式机，本机播放器收不到。");
     println!("  关掉本程序即恢复 —— 没有界面，用 listen.exe --stop。");
-}
-
-/// 提示性消息（非错误）。与 fail 共用输出通道的选择逻辑。
-fn report(msg: &str) {
-    if attach_console() {
-        println!("{msg}");
-        return;
-    }
-
-    use windows::Win32::UI::WindowsAndMessaging::{MB_ICONINFORMATION, MB_OK, MessageBoxW};
-    use windows::core::HSTRING;
-
-    let text = HSTRING::from(msg);
-    let title = HSTRING::from("cross-next listen");
-    unsafe {
-        MessageBoxW(None, &text, &title, MB_OK | MB_ICONINFORMATION);
-    }
-}
-
-/// 尝试附加到父进程控制台。成功表示这是从命令行启动的，那时打印比弹框有用。
-fn attach_console() -> bool {
-    use windows::Win32::System::Console::{ATTACH_PARENT_PROCESS, AttachConsole};
-
-    cfg!(debug_assertions) || unsafe { AttachConsole(ATTACH_PARENT_PROCESS) }.is_ok()
-}
-
-/// 启动期的致命错误。双击运行时没有控制台，所以用消息框。
-fn fail(msg: &str) {
-    if attach_console() {
-        eprintln!("{msg}");
-        return;
-    }
-
-    use windows::Win32::UI::WindowsAndMessaging::{MB_ICONWARNING, MB_OK, MessageBoxW};
-    use windows::core::HSTRING;
-
-    let text = HSTRING::from(msg);
-    let title = HSTRING::from("cross-next listen");
-    unsafe {
-        MessageBoxW(None, &text, &title, MB_OK | MB_ICONWARNING);
-    }
 }
