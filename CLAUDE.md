@@ -13,10 +13,14 @@ Read `README.md` first for user-facing behavior. It is deliberately a reference,
 ```sh
 cargo build --release          # all five binaries
 cargo clippy --all-targets     # must stay at zero warnings
+cargo test                     # Rust-side pure-logic units (ICO parsing)
 cargo run --bin probe          # SMTC/audio-session diagnostics
 cargo run --bin keyprobe       # which channel media keys travel on
 node tests/render.mjs          # frontend render branches
+node tools/make-icon.mjs       # regenerate assets/tray.ico, prints ASCII preview
 ```
+
+`assets/tray.ico` is a generated artifact that is committed, because `tray.rs` embeds it with `include_bytes!`. Editing `tools/make-icon.mjs` without re-running it and committing the result leaves the old icon in the exe.
 
 What CI enforces on every push to `main` (`.github/workflows/ci.yml`, `windows-latest`) — run these before pushing:
 
@@ -24,10 +28,13 @@ What CI enforces on every push to `main` (`.github/workflows/ci.yml`, `windows-l
 cargo fmt --all --check
 cargo clippy --all-targets --locked -- -D warnings
 cargo build --release --locked
+cargo test --locked
 node tests/render.mjs
 ```
 
-`tests/render.mjs` is the only automated test, and it covers the frontend only. Everything on the Rust side — SMTC transport, Core Audio volume, media-key injection, sleep suppression — can only be verified by running the real binaries against a live QQ音乐 instance. CI cannot: its runner has no player, no audio device, and is a non-interactive session where SMTC may not even initialize. A green CI does not mean the features work.
+A running `listen.exe` holds `target/release/listen.exe` open, so `cargo build --release` fails that one link step with `os error 5` while the other four binaries build fine. Stop it with `listen.exe --stop` first, or build the specific binaries you need.
+
+The automated tests cover the frontend (`tests/render.mjs`) and whatever pure byte/string logic exists on the Rust side (`cargo test` — currently just the ICO parsing in `tray.rs`). Everything that touches the OS — SMTC transport, Core Audio volume, media-key injection, sleep suppression, whether the tray icon actually draws — can only be verified by running the real binaries against a live QQ音乐 instance. CI cannot: its runner has no player, no audio device, and is a non-interactive session where SMTC may not even initialize. A green CI does not mean the features work.
 
 Releases are cut by pushing a `v*` tag (`.github/workflows/release.yml`). It checks the tag against `Cargo.toml`'s `version`, so bump that in the same commit as the tag.
 
@@ -41,23 +48,30 @@ Every `uses:` must resolve to an action whose `action.yml` declares the Node 24 
 
 | Binary | Role |
 |---|---|
-| `cross-next` | The server. Runs on the machine playing music. |
+| `cross-next` | The server. Runs on the machine playing music. Tray icon, no console. |
 | `remote` | One-shot client. For mouse drivers that can bind "launch program". |
 | `listen` | Resident forwarder. Grabs media keys via `RegisterHotKey`, forwards to the server. For drivers offering only preset media-key actions. Has no window or tray icon, so it takes over any previous instance on launch and stops via `--stop`. |
 | `probe` | Prints session context, all SMTC sessions, all audio sessions. |
 | `keyprobe` | Hooks keyboard/shell/hotkey channels at once to see what a driver actually emits. |
 
-`remote` and `listen` are `windows_subsystem = "windows"` so they don't flash a console. Both call `AttachConsole(ATTACH_PARENT_PROCESS)` — launched from a shell they print, double-clicked they show a message box. Both declare Per-Monitor-v2 DPI awareness before creating any window; without it message boxes render blurry on high-DPI displays.
+`cross-next`, `remote` and `listen` are all `windows_subsystem = "windows"` so they don't flash a console (debug builds keep one). The shared plumbing for that lives in `src/ui.rs`: `AttachConsole(ATTACH_PARENT_PROCESS)` — launched from a shell they print, double-clicked they show a message box — plus the Per-Monitor-v2 DPI declaration, which must happen before any window is created or message boxes render blurry on high-DPI displays.
+
+`ui::has_console` **caches** its answer, and has to: `AttachConsole` fails once it has already succeeded, so a fresh call per site would make every site after the first conclude "no console" and start popping message boxes at command-line users.
+
+The consequence of the server being windowless is easy to forget: **every `println!` in `main.rs` is silent when double-clicked**, and the startup banner is where the access URL comes from. That's why `main.rs` routes all three startup failures through `ui::fail`, why a freshly generated token triggers a one-time message box, and why the tray menu can re-show the URL. Adding a startup path that only prints re-opens the "double-clicked it, nothing happened" hole.
 
 ## Architecture
 
 ```
 browser ──HTTP/JSON──▶ cross-next.exe
+                       ├─ main thread: tray icon + message pump
                        ├─ media thread (owns one MTA apartment)
                        │    ├─ SMTC SessionManager  → QQ音乐 transport
                        │    └─ Core Audio sessions  → QQ音乐 per-process volume
-                       └─ HTTP thread-per-connection (embedded page + JSON API)
+                       └─ HTTP accept thread → thread-per-connection (page + JSON API)
 ```
+
+**The main thread belongs to the tray** (`src/tray.rs`), so `Server::serve()` — which never returns — runs on a named background thread. The pump has to be the main thread, and "quit" is the pump exiting: the HTTP and media threads are torn down with the process rather than signalled.
 
 **One dedicated media thread** (`src/media.rs`) owns the `SessionManager`; HTTP threads talk to it over an `mpsc` channel and wait for a reply. This initializes COM once, keeps WinRT objects off other threads, and reuses a single manager instance — windows-rs [#2061](https://github.com/microsoft/windows-rs/issues/2061) leaks memory if you recreate it in a loop.
 
@@ -79,6 +93,10 @@ These came from running the code against real QQ音乐; don't re-derive them.
 - **Adapter choice.** Prefer adapters that have a default gateway. WSL2/Hyper-V virtual adapters use `172.x`, pass an RFC1918 check, and are unreachable from other LAN devices. Never bind `0.0.0.0`.
 - **Thumbnails are not cached server-side.** SMTC art can lag the track metadata by a beat; caching pins the stale image permanently. The server returns a content hash as `ETag` with `Cache-Control: no-store`, and the page re-checks at 200ms/1.2s/3s after a track change.
 - **Honor `Connection: close`.** `client.rs` sends it and reads exactly `Content-Length` bytes. A server that ignores the header while the client waits for EOF stalls until timeout.
+- **`CreateIconFromResourceEx` wants one image's resource bits, not a `.ico` file.** Handing it the whole file fails — the directory header isn't part of what it parses. `tray::pick_image` therefore walks `ICONDIR` by hand (6-byte header, then one 16-byte `ICONDIRENTRY` per image) and slices out the entry nearest `SM_CXSMICON`. `dwVer` is `0x00030000`, the icon *resource format* version, unrelated to any Windows version. Byte-offset mistakes here don't error, they just make the icon quietly not appear, so `pick_image` is split out and unit-tested against the real `assets/tray.ico` — both tests were confirmed to fail when the offset field was read from the wrong four bytes.
+- **The tray window must not be `HWND_MESSAGE`.** Message-only windows can't take the foreground, and `TrackPopupMenu` requires a foreground window or the menu refuses to dismiss when you click elsewhere. Use an ordinary window without `WS_VISIBLE`. The `PostMessageW(WM_NULL)` after `TrackPopupMenu` is also load-bearing — without it the first click after the menu closes gets swallowed.
+- **Handle the `TaskbarCreated` broadcast.** Explorer restarting rebuilds the tray and drops every icon. Ignore the message and the icon is gone for good while the process keeps running — invisible and unkillable from the UI, exactly the trap that made `listen` need `--stop`. The message number only exists at runtime (`RegisterWindowMessageW`), so it can't sit in a `match` pattern; compare before the `match`.
+- **`NIM_DELETE` on the way out.** Skip it and the tray keeps a ghost icon until something makes the shell notice the process is gone.
 - **There is no way to ask who owns a hotkey.** `RegisterHotKey` failing tells you only that it failed. So `listen` identifies *its own* prior instance instead: a hidden window with a unique class name, found via `FindWindowW` and asked to quit with `WM_CLOSE`. Deliberately not process-name matching plus a kill — `listen.exe` is a generic enough name to hit something unrelated, and `WM_CLOSE` lets the old instance `UnregisterHotKey` on its way out, which a kill does not. Its message loop must call `DispatchMessageW`; `WM_HOTKEY` goes to the thread and is handled inline, but without dispatch the marker window never sees `WM_CLOSE` and takeover silently does nothing.
 
 ## Frontend

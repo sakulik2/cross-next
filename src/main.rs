@@ -2,13 +2,24 @@
 //!
 //! 必须在已登录的交互桌面会话里运行 —— SMTC 会话按 Windows 登录会话隔离，
 //! 做成服务或从 SSH 启动都会拿不到会话。详见 README。
+//!
+//! 编成窗口子系统（见下方属性）：这个进程要在放音乐那台机器上常开，不该占一个
+//! 控制台窗口。界面落在托盘图标上，右键能取回访问地址。从命令行启动时
+//! `AttachConsole` 借到父进程的控制台，横幅照旧可见 —— 首次配置一定是那么跑的。
+//!
+//! 代价是：**双击运行时所有 `println!` / `eprintln!` 都无声**。所以启动期的错误
+//! 一律走 `ui::fail`（没有控制台时弹消息框），否则用户看到的是"点了没反应"。
 
-use cross_next::{http, jsonlite::field, media, net};
+#![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
+
+use cross_next::{http, jsonlite::field, media, net, tray, ui};
 use std::net::{IpAddr, Ipv4Addr, SocketAddr};
 use std::path::PathBuf;
 
 const DEFAULT_PORT: u16 = 8770;
 const DEFAULT_TARGET: &str = "qqmusic";
+/// 消息框标题。
+const TITLE: &str = "cross-next";
 
 struct Config {
     /// 匹配 SMTC AUMID / 进程名的子串，不区分大小写。
@@ -20,11 +31,14 @@ struct Config {
 }
 
 fn main() {
+    // 必须在创建任何窗口（消息框、托盘）之前。
+    ui::init_dpi();
+
     let path = config_path();
-    let config = match load_or_create(&path) {
+    let (config, created) = match load_or_create(&path) {
         Ok(c) => c,
         Err(e) => {
-            eprintln!("配置读写失败（{}）：{e}", path.display());
+            ui::fail(TITLE, &format!("配置读写失败（{}）：{e}", path.display()));
             return;
         }
     };
@@ -32,7 +46,7 @@ fn main() {
     let addr = match resolve_addr(&config) {
         Ok(a) => a,
         Err(e) => {
-            eprintln!("{e}");
+            ui::fail(TITLE, &e);
             return;
         }
     };
@@ -40,10 +54,18 @@ fn main() {
     let listener = match http::bind(addr) {
         Ok(l) => l,
         Err(e) => {
-            eprintln!("绑定 {addr} 失败：{e}");
-            if e.kind() == std::io::ErrorKind::AddrInUse {
-                eprintln!("端口被占用。改 {} 里的 port 再试。", path.display());
-            }
+            // 端口占用几乎总是"已经开着一个了" —— 这是本程序的单实例判据，
+            // 所以说清楚，不要只丢一句系统错误。
+            let hint = if e.kind() == std::io::ErrorKind::AddrInUse {
+                format!(
+                    "\n\n端口被占用 —— 通常是已经开着一个 cross-next 了（看托盘图标）。\n\
+                     确实要再开一个就改 {} 里的 port。",
+                    path.display()
+                )
+            } else {
+                String::new()
+            };
+            ui::fail(TITLE, &format!("绑定 {addr} 失败：{e}{hint}"));
             return;
         }
     };
@@ -51,6 +73,7 @@ fn main() {
     // 媒体线程独占一个 MTA 单元，HTTP 线程通过通道跟它说话。
     let remote = media::spawn(config.target.clone());
 
+    // 这些只在从命令行启动时可见（窗口子系统下双击没有控制台），正好用于首次配置。
     println!("cross-next 已启动");
     println!();
     println!("  在笔记本或手机浏览器打开：");
@@ -62,14 +85,43 @@ fn main() {
     println!("  这是明文 HTTP，token 只用于挡住同网段的误触，不防嗅探。");
     println!("  不要把这个端口转发到公网。");
     println!();
-    println!("  Ctrl+C 退出。");
+    println!("  从托盘图标退出，或 Ctrl+C。");
 
-    http::Server {
-        listener,
-        token: config.token,
-        media: remote,
+    // 首次运行且无控制台：横幅没人看见，而 token 是新生成的，用户无从得知访问地址。
+    // 弹一次说清楚。之后再启动就不弹了 —— 地址随时能从托盘菜单取回。
+    if created && !ui::has_console() {
+        ui::box_message(
+            TITLE,
+            &format!(
+                "已生成配置：{}\n\n在同一局域网的浏览器里打开：\n\n\
+                 http://{addr}/?t={}\n\n\
+                 这个地址随时可以从托盘图标的右键菜单取回。",
+                path.display(),
+                config.token
+            ),
+            false,
+        );
     }
-    .serve();
+
+    // token 要在两处用：服务端拿去校验，托盘拿去拼访问地址。这里复制一份给托盘。
+    let token = config.token.clone();
+
+    // serve() 永不返回，而托盘要占着主线程跑消息循环，所以服务端搬到后台线程。
+    // 它是进程的主要工作，起不来就没有继续的意义。
+    std::thread::Builder::new()
+        .name("http-accept".into())
+        .spawn(move || {
+            http::Server {
+                listener,
+                token: config.token,
+                media: remote,
+            }
+            .serve();
+        })
+        .expect("HTTP 线程启动失败");
+
+    // 用户从托盘选「退出」时返回，进程随之结束（HTTP 线程是随进程走的）。
+    tray::run(addr, &token);
 }
 
 /// 配置放在 exe 同目录，这样绿色版拷到哪都能带着走。
@@ -80,11 +132,16 @@ fn config_path() -> PathBuf {
         .unwrap_or_else(|| PathBuf::from("config.json"))
 }
 
-fn load_or_create(path: &PathBuf) -> std::io::Result<Config> {
+/// 读配置，不存在则生成。
+///
+/// 第二个返回值是「token 是新生成的」—— 既包括首次运行，也包括用户清空了 token
+/// 让它重新生成。两种情况下用户都不知道当前的访问地址，调用方要负责告知。
+fn load_or_create(path: &PathBuf) -> std::io::Result<(Config, bool)> {
     if let Ok(text) = std::fs::read_to_string(path) {
-        let token = field(&text, "token").unwrap_or_default();
+        let existing = field(&text, "token").unwrap_or_default();
         // token 缺失或被清空时补一个，而不是裸奔。
-        let token = if token.is_empty() { new_token() } else { token };
+        let fresh = existing.is_empty();
+        let token = if fresh { new_token() } else { existing };
 
         let config = Config {
             target: field(&text, "target").unwrap_or_else(|| DEFAULT_TARGET.into()),
@@ -96,10 +153,10 @@ fn load_or_create(path: &PathBuf) -> std::io::Result<Config> {
         };
 
         // 补写回去，下次启动就稳定了。
-        if field(&text, "token").unwrap_or_default().is_empty() {
+        if fresh {
             write_config(path, &config)?;
         }
-        return Ok(config);
+        return Ok((config, fresh));
     }
 
     let config = Config {
@@ -110,7 +167,7 @@ fn load_or_create(path: &PathBuf) -> std::io::Result<Config> {
     };
     write_config(path, &config)?;
     println!("已生成配置：{}", path.display());
-    Ok(config)
+    Ok((config, true))
 }
 
 fn write_config(path: &PathBuf, c: &Config) -> std::io::Result<()> {

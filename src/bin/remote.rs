@@ -18,40 +18,30 @@
 
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
-use cross_next::client;
+use cross_next::{client, ui};
+
+/// 消息框标题。
+const TITLE: &str = "cross-next remote";
 
 fn main() {
-    // 声明 DPI 感知，否则高分屏上消息框会被系统按 96 DPI 渲染再放大，字发虚。
-    // 必须在创建任何窗口之前调用。
-    unsafe {
-        use windows::Win32::UI::HiDpi::{
-            DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2, SetProcessDpiAwarenessContext,
-        };
-        // 失败不影响功能（只是显示模糊），所以忽略返回值。
-        let _ = SetProcessDpiAwarenessContext(DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2);
-    }
+    ui::init_dpi();
 
     let args: Vec<String> = std::env::args().skip(1).collect();
     if args.is_empty() {
-        fail(&usage());
+        ui::fail(TITLE, &usage());
         return;
     }
 
     let config = match client::load_config() {
         Ok(c) => c,
         Err(e) => {
-            fail(&e);
+            ui::fail(TITLE, &e);
             return;
         }
     };
 
     if let Err(e) = client::dispatch(&config, &args) {
-        fail(&format!(
-            "{e}
-
-{}",
-            usage()
-        ));
+        ui::fail(TITLE, &format!("{e}\n\n{}", usage()));
     }
 }
 
@@ -68,40 +58,4 @@ fn usage() -> String {
      驱动没有「启动程序」选项时，改用 listen.exe（常驻，抢媒体键转发）。
 "
     .to_string()
-}
-
-/// 报错。
-///
-/// 这个程序编译成窗口子系统，双击运行时没有控制台，所以默认弹消息框。但从命令行
-/// 跑（配置阶段一定会这么跑）时它能附加到父进程的控制台 —— 那种情况下打印比弹框
-/// 有用得多，输出可以复制、可以管道。
-fn fail(msg: &str) {
-    if attach_console() {
-        eprintln!("{msg}");
-        return;
-    }
-
-    use windows::Win32::UI::WindowsAndMessaging::{MB_ICONWARNING, MB_OK, MessageBoxW};
-    use windows::core::HSTRING;
-
-    let text = HSTRING::from(msg);
-    let title = HSTRING::from("cross-next remote");
-    unsafe {
-        MessageBoxW(None, &text, &title, MB_OK | MB_ICONWARNING);
-    }
-}
-
-/// 尝试附加到父进程的控制台。成功表示这是从命令行启动的。
-///
-/// 窗口子系统程序默认没有控制台，`AttachConsole(ATTACH_PARENT_PROCESS)` 能借用
-/// 调用方的。双击启动时父进程是资源管理器，没有控制台，于是失败 —— 正好当判据。
-fn attach_console() -> bool {
-    use windows::Win32::System::Console::{ATTACH_PARENT_PROCESS, AttachConsole};
-
-    // 调试构建直接走 stderr，不必绕这一圈。
-    if cfg!(debug_assertions) {
-        return true;
-    }
-
-    unsafe { AttachConsole(ATTACH_PARENT_PROCESS).is_ok() }
 }
