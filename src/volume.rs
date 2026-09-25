@@ -87,7 +87,8 @@ where
 {
     let needle = target.to_lowercase();
     // 去掉可能带的 .exe，让 config 里写 `QQMusic.exe` 或 `qqmusic` 都能匹配。
-    let needle = needle.trim_end_matches(".exe");
+    // 用 strip_suffix 而非 trim_end_matches：后者会反复剥，"a.exe.exe" 会变成 "a"。
+    let needle = needle.strip_suffix(".exe").unwrap_or(&needle);
 
     // 先收集候选，再决定用哪些 —— 子串匹配可能同时命中多个不同的应用
     // （典型：target 写成 "qq" 时，QQ.exe 和 QQMusic.exe 都会中）。
@@ -114,7 +115,7 @@ where
                 continue;
             };
             let stem = name.to_lowercase();
-            let stem = stem.trim_end_matches(".exe");
+            let stem = stem.strip_suffix(".exe").unwrap_or(&stem);
             if !stem.contains(needle) {
                 continue;
             }
