@@ -59,7 +59,7 @@ pub fn load_config() -> Result<Config, String> {
 /// 执行一条命令。命令名与 `remote.exe` 的参数一致。
 pub fn dispatch(config: &Config, args: &[String]) -> Result<(), String> {
     match args[0].as_str() {
-        "next" | "prev" | "playpause" | "restart" | "replay" => {
+        "next" | "prev" | "playpause" => {
             let body = format!("{{\"action\":\"{}\"}}", args[0]);
             let resp = post(config, "/api/cmd", &body)?;
             // accepted=false 表示 QQ音乐 拒绝了命令，如实报出来。

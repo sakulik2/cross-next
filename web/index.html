@@ -120,57 +120,12 @@
   /* 不可拖动时（应用不允许 seek）仍显示进度，只是不能操作 */
   #seekBar:disabled { cursor: default; }
 
-  /* 三列：重播键 | 主传输键 | 模式开关。只有中列参与居中，所以 play 始终在
-     卡片正中，两侧各放多少东西都不会把它推歪。 */
   .controls {
-    display: grid;
-    grid-template-columns: 1fr auto 1fr;
-    align-items: center;
-    width: 100%;
-  }
-
-  .controls .main {
     display: flex;
     align-items: center;
     justify-content: center;
     gap: 14px;
   }
-
-  /* 重播键靠向主键组，做成小一号的 ghost 按钮 —— 它是辅助操作，
-     不该和 prev/play/next 抢视觉重量。 */
-  .controls .aux {
-    justify-self: end;
-    padding-right: 12px;
-  }
-
-  .aux button {
-    width: 40px; height: 40px;
-    background: none;
-  }
-  .aux button svg { width: 20px; height: 20px; }
-
-  /* 模式开关在右列，与左列的重播键镜像对齐。 */
-  .controls .mode {
-    justify-self: start;
-    padding-left: 12px;
-  }
-
-  /* 文字胶囊而非圆形，和图标键区分开：它切换状态，不执行动作。 */
-  #mode {
-    width: auto; height: 26px;
-    padding: 0 10px;
-    border-radius: 13px;
-    background: var(--faint);
-    font: inherit;
-    font-size: .7rem;
-    color: var(--dim);
-    white-space: nowrap;
-  }
-  #mode[hidden] { display: none; }
-
-  /* button 的 display:grid 会盖过 hidden 属性，必须显式关掉 ——
-     和 .seek[hidden] 同一个原因。漏了这条按钮在 mediakey 模式下照样显示。 */
-  #restart[hidden] { display: none; }
 
   button {
     border: 0;
@@ -298,28 +253,15 @@
   </div>
 
   <div class="controls">
-    <!-- 重播。刻意不用「⏮带竖线」那种图标：小尺寸下和 prev 分不出来。 -->
-    <div class="aux">
-      <button id="restart" aria-label="重播" title="从头开始" hidden>
-        <svg viewBox="0 0 24 24"><path d="M12 5V1L7 6l5 5V7c3.31 0 6 2.69 6 6s-2.69 6-6 6-6-2.69-6-6H4c0 4.42 3.58 8 8 8s8-3.58 8-8-3.58-8-8-8z"/></svg>
-      </button>
-    </div>
-    <div class="main">
-      <button id="prev" aria-label="上一首" title="上一首">
-        <svg viewBox="0 0 24 24"><path d="M7 6h2v12H7zm3 6 8.5 6V6z"/></svg>
-      </button>
-      <button id="play" aria-label="播放/暂停" title="播放/暂停">
-        <svg viewBox="0 0 24 24"><path id="playIcon" d="M8 5v14l11-7z"/></svg>
-      </button>
-      <button id="next" aria-label="下一首" title="下一首">
-        <svg viewBox="0 0 24 24"><path d="M15 6h2v12h-2zM5 18l8.5-6L5 6z"/></svg>
-      </button>
-    </div>
-    <!-- 重播的两种模式。刻意做成看得见的开关而不是长按/右键那类隐藏手势 ——
-         这是个会被记住的偏好，不是一次性动作，藏起来只会没人知道它存在。 -->
-    <div class="aux mode">
-      <button id="mode" hidden></button>
-    </div>
+    <button id="prev" aria-label="上一首" title="上一首">
+      <svg viewBox="0 0 24 24"><path d="M7 6h2v12H7zm3 6 8.5 6V6z"/></svg>
+    </button>
+    <button id="play" aria-label="播放/暂停" title="播放/暂停">
+      <svg viewBox="0 0 24 24"><path id="playIcon" d="M8 5v14l11-7z"/></svg>
+    </button>
+    <button id="next" aria-label="下一首" title="下一首">
+      <svg viewBox="0 0 24 24"><path d="M15 6h2v12h-2zM5 18l8.5-6L5 6z"/></svg>
+    </button>
   </div>
 
   <div class="vol">
@@ -386,7 +328,6 @@ const els = {
   title: $("title"), artist: $("artist"), note: $("note"),
   play: $("play"), playIcon: $("playIcon"),
   prev: $("prev"), next: $("next"),
-  restart: $("restart"), mode: $("mode"),
   vol: $("vol"), mute: $("mute"), volIcon: $("volIcon"),
   seek: $("seek"), seekBar: $("seekBar"),
   elapsed: $("elapsed"), total: $("total"),
@@ -483,31 +424,6 @@ let artEtag = null;      // 已显示封面的内容哈希，用于判断图是�
 let seekDragging = false;
 let track = null; // { position, duration, playing, at } —— at 是收到该值时的本地时刻
 
-// 重播模式。restart 只跳回起点，replay 跳回后顺带播放。
-//
-// 两种都有人要，差别只在暂停时按下去：restart 保持暂停（"退回开头待命"），
-// replay 直接出声（"再听一遍"）。播放中两者等价。存 localStorage ——
-// 这是个偏好，不该每次开页面都重选。
-const MODE_KEY = "cross-next-replay-mode";
-let replayMode = localStorage.getItem(MODE_KEY) === "replay" ? "replay" : "restart";
-
-// 开关上的字说的是**当前**模式，不是点下去会变成什么 —— 后者每次都得在脑子里
-// 取反一遍。点击的后果写在 title 里。
-function renderMode() {
-  const isReplay = replayMode === "replay";
-  els.mode.textContent = isReplay ? "重播并播放" : "仅回开头";
-  els.mode.title = isReplay
-    ? "当前：跳回开头并开始播放。点击改为仅回到开头（暂停时保持暂停）"
-    : "当前：仅跳回开头，暂停时保持暂停。点击改为跳回后自动播放";
-}
-renderMode();
-
-// 重播键和它的模式开关同进同退 —— 开关单独留着没有意义。
-function showRestart(on) {
-  els.restart.hidden = !on;
-  els.mode.hidden = !on;
-}
-
 // volume 为 null 表示 QQ音乐 当前没有音频会话（没出声）。
 function renderVolume(s) {
   const hasVol = s.volume !== null && s.volume !== undefined;
@@ -537,10 +453,14 @@ function renderSeek(s) {
   if (!has) { track = null; return; }
 
   track = { position: s.position, duration: s.duration, playing: !!s.playing, at: performance.now() };
-  // 刻意不按 canSeek 禁用滑杆。QQ音乐 上报的能力位不可信 —— 实测它报
-  // IsPlaybackPositionEnabled=false，而 TryChangePlaybackPositionAsync 照样
-  // 返回 accepted=true 并真的跳了过去。照能力位禁用等于白白废掉一个能用的功能。
-  // 和播放键同一套做法：命令照发，应用拒绝就如实报出来。
+  // 按 canSeek 禁用滑杆。这一条**和播放键的做法相反**，是有实测依据的特例：
+  // IsPlaybackPositionEnabled 在定位上是诚实的，报 false 就真的不支持 —— 而
+  // TryChangePlaybackPositionAsync 反倒会谎报 accepted=true 且位置分毫不动。
+  // 所以这里只能信能力位，不能信"命令照发、应用拒绝就报错"那套：应用不会拒绝。
+  //
+  // 留着一个拖了必然弹回去、还不给任何提示的滑杆，比禁用它更糟 ——
+  // 那正是用户看到的"拖进度条没用"。
+  els.seekBar.disabled = !s.canSeek;
   els.total.textContent = fmtTime(s.duration);
   paint();
 }
@@ -617,7 +537,6 @@ function render(s) {
     els.art.classList.add("empty");
     els.artImg.hidden = true;
     els.seek.hidden = true;
-    showRestart(false);
     document.body.classList.remove("playing");
     lastTag = null;
     artEtag = null;
@@ -635,9 +554,6 @@ function render(s) {
     els.artImg.hidden = true;
     document.body.classList.add("playing");
     els.seek.hidden = true;
-    // mediakey 模式没有 SMTC 会话，定位无从下手。和进度条一样整块藏掉，
-    // 而不是留个按下去必然报错的按钮。
-    showRestart(false);
     lastTag = null;
     artEtag = null;
     track = null;
@@ -666,13 +582,13 @@ function render(s) {
   }
 
   renderSeek(s);
-  // smtc 模式一律显示。刻意不看 canSeek —— 和进度条同一个理由：QQ音乐 上报
-  // IsPlaybackPositionEnabled=false 却真的能跳，照能力位藏起来等于白废一个能用的功能。
-  showRestart(true);
   const hasVol = renderVolume(s);
 
   const notes = [];
   if (!s.matched) notes.push("未锁定到 QQ音乐，当前控制的是：" + s.aumid);
+  // 说明滑杆为什么是灰的。不说的话用户只会以为进度条坏了 ——
+  // 而这正是此前"拖了没反应"的真实成因。
+  if (track && !s.canSeek) notes.push("此 QQ音乐 版本不支持拖动定位，进度条只显示不可拖");
   if (!hasVol) notes.push("音量暂不可用（QQ音乐 未输出声音）");
   els.note.textContent = notes.join("；");
 }
@@ -728,29 +644,6 @@ async function setVolume(level) {
     els.note.textContent = e.message;
   }
 }
-
-// 重播。乐观地把进度归零，不等最多一秒的轮询 —— 这个按钮的全部价值就在即时反馈。
-els.restart.onclick = () => {
-  if (track) {
-    track = { ...track, position: 0, at: performance.now() };
-    // replay 模式下顺带乐观地转成播放态，和 send("playpause") 同一套做法。
-    if (replayMode === "replay" && !track.playing) {
-      track = { ...track, playing: true };
-      document.body.classList.add("playing");
-      els.playIcon.setAttribute("d", ICON.pause);
-      pending++;
-      setTimeout(() => { pending--; }, 1200);
-    }
-    paint();
-  }
-  send(replayMode);
-};
-
-els.mode.onclick = () => {
-  replayMode = replayMode === "replay" ? "restart" : "replay";
-  localStorage.setItem(MODE_KEY, replayMode);
-  renderMode();
-};
 
 els.prev.onclick = () => send("prev");
 els.next.onclick = () => send("next");
@@ -872,13 +765,6 @@ els.tokenInput.addEventListener("keydown", (e) => {
 // 键盘快捷键：桌面上用起来顺手
 addEventListener("keydown", (e) => {
   if (e.target.tagName === "INPUT") return;
-  // Home 走按钮那条路（带乐观更新），且要跟着当前模式走 ——
-  // 直接 send("restart") 会绕开两者。
-  if (e.key === "Home") {
-    e.preventDefault();
-    if (!els.restart.hidden) els.restart.onclick();
-    return;
-  }
   const map = { ArrowLeft: "prev", ArrowRight: "next", " ": "playpause" };
   const action = map[e.key];
   if (action) { e.preventDefault(); send(action); }

@@ -93,9 +93,6 @@ pub enum Command {
     TogglePlayPause,
     /// 拖动到指定位置（秒）。
     Seek(f64),
-    /// 跳回曲目起点。Restart 只定位，Replay 定位后顺带发一次播放。
-    Restart,
-    Replay,
     /// 内部心跳，仅用于刷新休眠抑制状态。不产生回复。
     Heartbeat,
     /// 设置 QQ音乐 进程音量。
@@ -221,8 +218,6 @@ fn run(
             Command::Next => transport(&manager, &target, Transport::Next),
             Command::TogglePlayPause => transport(&manager, &target, Transport::Toggle),
             Command::Seek(secs) => seek(&manager, &target, secs),
-            Command::Restart => restart(&manager, &target, false),
-            Command::Replay => restart(&manager, &target, true),
             Command::SetVolume(v) => match volume::set_volume(&target, v) {
                 Ok(applied) => Reply::Accepted(applied),
                 Err(e) => Reply::Error(e.message()),
@@ -471,44 +466,9 @@ fn seek(manager: &SessionManager, target: &str, secs: f64) -> Reply {
         return Reply::Error("位置不是有限数值".into());
     }
 
-    seek_to(manager, target, secs, "拖动定位")
-}
-
-/// 从头开始重放当前曲目。
-///
-/// SMTC 没有"重播"原语 —— 整个 session 上可用的 `Try*` 里最接近的就是定位，
-/// 所以这里就是 `seek(0)`。刻意不用 `TrySkipPreviousAsync`：有些播放器把它实现成
-/// "播过 3 秒就重播、否则上一首"，但那是各应用自己的语义，SMTC 不保证，
-/// QQ音乐 上指望不上。也不用 `TryRewindAsync`，那是连续快退而非跳到起点。
-///
-/// `play` 为真时定位后补一发播放，让暂停中按下去真的出声（前端的"重播并播放"）。
-/// 为假时只移动位置，暂停保持暂停 —— 两种都有人要，交给调用方选。
-fn restart(manager: &SessionManager, target: &str, play: bool) -> Reply {
-    let located = seek_to(manager, target, 0.0, "重播");
-
-    // 定位没成功就不必再发播放：位置还在原处，出声只会变成"继续播"，
-    // 那是另一个意思，比什么都不做更让人困惑。
-    if !play || !matches!(located, Reply::Accepted(true)) {
-        return located;
-    }
-
-    let Ok(Some((session, _))) = find_session(manager, target) else {
-        return located;
-    };
-
-    // 已经在播时 TryPlayAsync 通常返回 false（无事可做），那不是错误 ——
-    // 定位已经成功，整条命令就算成功。所以这里刻意丢掉播放的返回值。
-    match session.TryPlayAsync().and_then(block_on) {
-        Ok(_) => Reply::Accepted(true),
-        Err(e) => Reply::Error(e.message()),
-    }
-}
-
-/// 定位到相对起点的第 `secs` 秒。`what` 只用于错误文案。
-fn seek_to(manager: &SessionManager, target: &str, secs: f64, what: &str) -> Reply {
     let Ok(Some((session, _))) = find_session(manager, target) else {
         // mediakey 模式下没有会话，定位无从下手。
-        return Reply::Error(format!("当前通路不支持{what}"));
+        return Reply::Error("当前通路不支持拖动定位".into());
     };
 
     // 加上 StartTime 换回绝对位置 —— 前端发来的是相对于起点的秒数。
@@ -524,9 +484,49 @@ fn seek_to(manager: &SessionManager, target: &str, secs: f64, what: &str) -> Rep
         .TryChangePlaybackPositionAsync(ticks)
         .and_then(block_on)
     {
-        Ok(accepted) => Reply::Accepted(accepted),
+        // `accepted` 是应用的**说法**，不是证据。实测 QQ音乐 在完全不支持定位的
+        // 情况下照样回 true，位置分毫不动 —— 只有读回位置才能分辨。所以这里不直接
+        // 采信，回一个「声称接受，待核对」，由 verify_seek 说最终结论。
+        Ok(true) => verify_seek(&session, ticks),
+        // 如实拒绝的，照原样回传。
+        Ok(false) => Reply::Accepted(false),
         Err(e) => Reply::Error(e.message()),
     }
+}
+
+/// 发完定位后读回位置，判断应用是不是在谎报。
+///
+/// 为什么值得多花这点时间：QQ音乐 对 `TryChangePlaybackPositionAsync` 一律回
+/// `accepted=true` 而位置照常往前走（实测，三次一致；`IsPlaybackPositionEnabled`
+/// 同时诚实地报 `false`）。不核对的话前端只能拿到"成功"，于是乐观更新把滑杆移过去、
+/// 一秒后又被真值拖回来 —— 表现就是"拖了没反应"，且没有任何错误提示。
+///
+/// 判定要给应用留出处理时间，但又不能等太久让 HTTP 请求显得卡。180ms 是实测够用的
+/// 折中：真支持定位的播放器在这个时间内位置已经跳过去了。
+///
+/// 容差要比等待时间宽：正常播放本身会推进 180ms，而"没跳"和"跳了"的差距通常是几十秒。
+fn verify_seek(session: &Session, want_ticks: i64) -> Reply {
+    const SETTLE_MS: u64 = 180;
+    // 2 秒。容得下处理延迟和正常播放推进，又远小于任何有意义的跳转距离。
+    const TOLERANCE_TICKS: i64 = 2 * 10_000_000;
+
+    std::thread::sleep(std::time::Duration::from_millis(SETTLE_MS));
+
+    let Ok(actual) = session
+        .GetTimelineProperties()
+        .and_then(|t| t.Position())
+        .map(|d| d.Duration)
+    else {
+        // 读不回来就别妄下结论，保持原来的"已接受"。
+        return Reply::Accepted(true);
+    };
+
+    if (actual - want_ticks).abs() <= TOLERANCE_TICKS {
+        return Reply::Accepted(true);
+    }
+
+    // 位置没动到目标 —— 应用谎报了。如实告诉前端，让它禁掉滑杆而不是继续假装。
+    Reply::Error("QQ音乐 不支持拖动定位（它声称接受了，但播放位置没有改变）".into())
 }
 
 /// 由曲目元数据派生一个短标识。前端用它判断曲目是否换了。

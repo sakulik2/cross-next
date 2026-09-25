@@ -24,7 +24,6 @@ const el = () => ({
   onclick: null,
   classList: { add() {}, remove() {}, toggle() {}, contains: () => false },
   setAttribute() {},
-  title: "",
   getAttribute: () => null,
   style: { setProperty() {} },
   _on: {},
@@ -203,20 +202,47 @@ for (const [input, want] of times) {
 if (timeBad === 0) console.log("  ok    fmtTime 六个边界");
 failed += timeBad;
 
-// canSeek=false 仍要能拖。QQ音乐 上报的能力位不可信（报 false 却真的能跳），
-// 照它禁用滑杆等于白废一个能用的功能。这条守着别人「照能力位禁用」改回去。
+// canSeek 在定位上是诚实的，报 false 就必须禁用滑杆。
+//
+// 这条曾经是反的（"能力位不可信，不该照它禁用"），依据是一条错误的实测记录。
+// 真机复验结果：QQ音乐 报 IsPlaybackPositionEnabled=false，而
+// TryChangePlaybackPositionAsync 回 accepted=true 却**位置分毫不动**
+// （186.4s 要求跳到 96.6s，两秒后 189.1s，三次一致）。
+// 留着滑杆的结果就是用户拖完弹回去、且没有任何提示 —— 那就是"拖进度条没用"这个 bug。
 try {
   render({ present: true, mode: "smtc", matched: true, playing: true,
            title: "歌", artTag: "s1", position: 30, duration: 200, canSeek: false });
   const bar = globalThis.__nodes["seekBar"];
-  if (bar.disabled) {
-    console.log("  FAIL  canSeek=false 时滑杆被禁用了 —— 能力位不可信，不该照它禁用");
+  const note = globalThis.__nodes["note"];
+  let bad = 0;
+  if (!bar.disabled) {
+    console.log("  FAIL  canSeek=false 时滑杆仍可拖 —— 拖了必然弹回去，且不给提示");
+    bad++;
+  }
+  // 光禁用不解释，用户只会以为进度条坏了。
+  if (!note.textContent.includes("不支持拖动")) {
+    console.log("  FAIL  滑杆禁用了却没说明原因：note = " + note.textContent);
+    bad++;
+  }
+  if (!bad) console.log("  ok    canSeek=false 时禁用滑杆并说明原因");
+  failed += bad;
+} catch (e) {
+  console.log("  FAIL  canSeek=false 时禁用滑杆: " + e.message);
+  failed++;
+}
+
+// canSeek=true 时不能反过来误禁 —— 支持定位的播放器必须照常能拖。
+try {
+  render({ present: true, mode: "smtc", matched: true, playing: true,
+           title: "歌", artTag: "s2", position: 30, duration: 200, canSeek: true });
+  if (globalThis.__nodes["seekBar"].disabled) {
+    console.log("  FAIL  canSeek=true 时滑杆被禁用了");
     failed++;
   } else {
-    console.log("  ok    canSeek=false 仍可拖动");
+    console.log("  ok    canSeek=true 仍可拖动");
   }
 } catch (e) {
-  console.log("  FAIL  canSeek=false 仍可拖动: " + e.message);
+  console.log("  FAIL  canSeek=true 仍可拖动: " + e.message);
   failed++;
 }
 
@@ -252,87 +278,6 @@ try {
   }
 } catch (e) {
   console.log("  FAIL  原地点击不会冻结进度条: " + e.constructor.name + ": " + e.message);
-  failed++;
-}
-
-// 重播键只在 smtc 模式下出现。mediakey 模式没有 SMTC 会话，定位无从下手，
-// 留个按下去必然报错的按钮不如藏掉 —— 和进度条在该模式下的处理一致。
-try {
-  const btn = globalThis.__nodes["restart"];
-  const mode = globalThis.__nodes["mode"];
-  let bad = 0;
-
-  render({ present: true, mode: "smtc", matched: true, playing: true,
-           title: "歌", artTag: "r1", position: 30, duration: 200, canSeek: false });
-  // canSeek=false 也要显示：能力位不可信，理由同滑杆那条。
-  if (btn.hidden) { console.log("  FAIL  smtc 模式下重播键没显示（canSeek=false 不该藏）"); bad++; }
-  if (mode.hidden) { console.log("  FAIL  smtc 模式下模式开关没显示"); bad++; }
-
-  render({ present: true, mode: "mediakey", volume: 0.5, muted: false });
-  if (!btn.hidden) { console.log("  FAIL  mediakey 模式下重播键仍显示，但该通路无法定位"); bad++; }
-  if (!mode.hidden) { console.log("  FAIL  mediakey 模式下模式开关仍显示"); bad++; }
-
-  render({ present: false });
-  if (!btn.hidden) { console.log("  FAIL  无会话时重播键仍显示"); bad++; }
-
-  if (!bad) console.log("  ok    重播键仅在 smtc 模式出现");
-  failed += bad;
-} catch (e) {
-  console.log("  FAIL  重播键仅在 smtc 模式出现: " + e.constructor.name + ": " + e.message);
-  failed++;
-}
-
-// 点重播要立刻把进度归零，不等最多一秒的轮询 —— 这个按钮的价值全在即时反馈。
-// 乐观更新在 onclick 里，只调 render() 测不到，必须真的点一下。
-try {
-  const elapsed = globalThis.__nodes["elapsed"];
-  render({ present: true, mode: "smtc", matched: true, playing: true,
-           title: "歌", artTag: "r2", position: 95, duration: 200, canSeek: true });
-  const before = elapsed.textContent;
-  els.restart.onclick();
-  if (elapsed.textContent !== "0:00") {
-    console.log("  FAIL  点重播后 elapsed 是 " + elapsed.textContent + "（点击前 " + before + "），期望立刻归零");
-    failed++;
-  } else {
-    console.log("  ok    点重播立刻把进度归零");
-  }
-} catch (e) {
-  console.log("  FAIL  点重播立刻把进度归零: " + e.constructor.name + ": " + e.message);
-  failed++;
-}
-
-// 模式开关上的字必须说「当前是什么」，不是「点了会变成什么」——后者每次都得
-// 在脑子里取反。两种模式的文字也不能一样，否则开关等于没有反馈。
-try {
-  const mode = globalThis.__nodes["mode"];
-  let bad = 0;
-
-  // 从已知状态出发：上面的用例可能已经把它切过。
-  if (mode.textContent.includes("并播放")) els.mode.onclick();
-  const restartLabel = mode.textContent;
-
-  els.mode.onclick();
-  const replayLabel = mode.textContent;
-
-  if (restartLabel === replayLabel) {
-    console.log("  FAIL  切换模式后开关文字没变：仍是 " + replayLabel);
-    bad++;
-  }
-  if (!replayLabel.includes("播放")) {
-    console.log("  FAIL  replay 模式的文字看不出会播放：" + replayLabel);
-    bad++;
-  }
-  // 切回去，不给后面的用例留状态。
-  els.mode.onclick();
-  if (mode.textContent !== restartLabel) {
-    console.log("  FAIL  模式切不回来：" + mode.textContent + " != " + restartLabel);
-    bad++;
-  }
-
-  if (!bad) console.log("  ok    模式开关文字随状态变化");
-  failed += bad;
-} catch (e) {
-  console.log("  FAIL  模式开关文字随状态变化: " + e.constructor.name + ": " + e.message);
   failed++;
 }
 
