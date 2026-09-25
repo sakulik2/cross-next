@@ -24,6 +24,7 @@ const el = () => ({
   onclick: null,
   classList: { add() {}, remove() {}, toggle() {}, contains: () => false },
   setAttribute() {},
+  title: "",
   getAttribute: () => null,
   style: { setProperty() {} },
   _on: {},
@@ -251,6 +252,87 @@ try {
   }
 } catch (e) {
   console.log("  FAIL  原地点击不会冻结进度条: " + e.constructor.name + ": " + e.message);
+  failed++;
+}
+
+// 重播键只在 smtc 模式下出现。mediakey 模式没有 SMTC 会话，定位无从下手，
+// 留个按下去必然报错的按钮不如藏掉 —— 和进度条在该模式下的处理一致。
+try {
+  const btn = globalThis.__nodes["restart"];
+  const mode = globalThis.__nodes["mode"];
+  let bad = 0;
+
+  render({ present: true, mode: "smtc", matched: true, playing: true,
+           title: "歌", artTag: "r1", position: 30, duration: 200, canSeek: false });
+  // canSeek=false 也要显示：能力位不可信，理由同滑杆那条。
+  if (btn.hidden) { console.log("  FAIL  smtc 模式下重播键没显示（canSeek=false 不该藏）"); bad++; }
+  if (mode.hidden) { console.log("  FAIL  smtc 模式下模式开关没显示"); bad++; }
+
+  render({ present: true, mode: "mediakey", volume: 0.5, muted: false });
+  if (!btn.hidden) { console.log("  FAIL  mediakey 模式下重播键仍显示，但该通路无法定位"); bad++; }
+  if (!mode.hidden) { console.log("  FAIL  mediakey 模式下模式开关仍显示"); bad++; }
+
+  render({ present: false });
+  if (!btn.hidden) { console.log("  FAIL  无会话时重播键仍显示"); bad++; }
+
+  if (!bad) console.log("  ok    重播键仅在 smtc 模式出现");
+  failed += bad;
+} catch (e) {
+  console.log("  FAIL  重播键仅在 smtc 模式出现: " + e.constructor.name + ": " + e.message);
+  failed++;
+}
+
+// 点重播要立刻把进度归零，不等最多一秒的轮询 —— 这个按钮的价值全在即时反馈。
+// 乐观更新在 onclick 里，只调 render() 测不到，必须真的点一下。
+try {
+  const elapsed = globalThis.__nodes["elapsed"];
+  render({ present: true, mode: "smtc", matched: true, playing: true,
+           title: "歌", artTag: "r2", position: 95, duration: 200, canSeek: true });
+  const before = elapsed.textContent;
+  els.restart.onclick();
+  if (elapsed.textContent !== "0:00") {
+    console.log("  FAIL  点重播后 elapsed 是 " + elapsed.textContent + "（点击前 " + before + "），期望立刻归零");
+    failed++;
+  } else {
+    console.log("  ok    点重播立刻把进度归零");
+  }
+} catch (e) {
+  console.log("  FAIL  点重播立刻把进度归零: " + e.constructor.name + ": " + e.message);
+  failed++;
+}
+
+// 模式开关上的字必须说「当前是什么」，不是「点了会变成什么」——后者每次都得
+// 在脑子里取反。两种模式的文字也不能一样，否则开关等于没有反馈。
+try {
+  const mode = globalThis.__nodes["mode"];
+  let bad = 0;
+
+  // 从已知状态出发：上面的用例可能已经把它切过。
+  if (mode.textContent.includes("并播放")) els.mode.onclick();
+  const restartLabel = mode.textContent;
+
+  els.mode.onclick();
+  const replayLabel = mode.textContent;
+
+  if (restartLabel === replayLabel) {
+    console.log("  FAIL  切换模式后开关文字没变：仍是 " + replayLabel);
+    bad++;
+  }
+  if (!replayLabel.includes("播放")) {
+    console.log("  FAIL  replay 模式的文字看不出会播放：" + replayLabel);
+    bad++;
+  }
+  // 切回去，不给后面的用例留状态。
+  els.mode.onclick();
+  if (mode.textContent !== restartLabel) {
+    console.log("  FAIL  模式切不回来：" + mode.textContent + " != " + restartLabel);
+    bad++;
+  }
+
+  if (!bad) console.log("  ok    模式开关文字随状态变化");
+  failed += bad;
+} catch (e) {
+  console.log("  FAIL  模式开关文字随状态变化: " + e.constructor.name + ": " + e.message);
   failed++;
 }
 

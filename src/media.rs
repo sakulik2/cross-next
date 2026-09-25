@@ -93,6 +93,9 @@ pub enum Command {
     TogglePlayPause,
     /// 拖动到指定位置（秒）。
     Seek(f64),
+    /// 跳回曲目起点。Restart 只定位，Replay 定位后顺带发一次播放。
+    Restart,
+    Replay,
     /// 内部心跳，仅用于刷新休眠抑制状态。不产生回复。
     Heartbeat,
     /// 设置 QQ音乐 进程音量。
@@ -218,6 +221,8 @@ fn run(
             Command::Next => transport(&manager, &target, Transport::Next),
             Command::TogglePlayPause => transport(&manager, &target, Transport::Toggle),
             Command::Seek(secs) => seek(&manager, &target, secs),
+            Command::Restart => restart(&manager, &target, false),
+            Command::Replay => restart(&manager, &target, true),
             Command::SetVolume(v) => match volume::set_volume(&target, v) {
                 Ok(applied) => Reply::Accepted(applied),
                 Err(e) => Reply::Error(e.message()),
@@ -466,9 +471,44 @@ fn seek(manager: &SessionManager, target: &str, secs: f64) -> Reply {
         return Reply::Error("位置不是有限数值".into());
     }
 
+    seek_to(manager, target, secs, "拖动定位")
+}
+
+/// 从头开始重放当前曲目。
+///
+/// SMTC 没有"重播"原语 —— 整个 session 上可用的 `Try*` 里最接近的就是定位，
+/// 所以这里就是 `seek(0)`。刻意不用 `TrySkipPreviousAsync`：有些播放器把它实现成
+/// "播过 3 秒就重播、否则上一首"，但那是各应用自己的语义，SMTC 不保证，
+/// QQ音乐 上指望不上。也不用 `TryRewindAsync`，那是连续快退而非跳到起点。
+///
+/// `play` 为真时定位后补一发播放，让暂停中按下去真的出声（前端的"重播并播放"）。
+/// 为假时只移动位置，暂停保持暂停 —— 两种都有人要，交给调用方选。
+fn restart(manager: &SessionManager, target: &str, play: bool) -> Reply {
+    let located = seek_to(manager, target, 0.0, "重播");
+
+    // 定位没成功就不必再发播放：位置还在原处，出声只会变成"继续播"，
+    // 那是另一个意思，比什么都不做更让人困惑。
+    if !play || !matches!(located, Reply::Accepted(true)) {
+        return located;
+    }
+
+    let Ok(Some((session, _))) = find_session(manager, target) else {
+        return located;
+    };
+
+    // 已经在播时 TryPlayAsync 通常返回 false（无事可做），那不是错误 ——
+    // 定位已经成功，整条命令就算成功。所以这里刻意丢掉播放的返回值。
+    match session.TryPlayAsync().and_then(block_on) {
+        Ok(_) => Reply::Accepted(true),
+        Err(e) => Reply::Error(e.message()),
+    }
+}
+
+/// 定位到相对起点的第 `secs` 秒。`what` 只用于错误文案。
+fn seek_to(manager: &SessionManager, target: &str, secs: f64, what: &str) -> Reply {
     let Ok(Some((session, _))) = find_session(manager, target) else {
         // mediakey 模式下没有会话，定位无从下手。
-        return Reply::Error("当前通路不支持拖动定位".into());
+        return Reply::Error(format!("当前通路不支持{what}"));
     };
 
     // 加上 StartTime 换回绝对位置 —— 前端发来的是相对于起点的秒数。

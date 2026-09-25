@@ -125,11 +125,27 @@ powershell -ExecutionPolicy Bypass -File update.ps1
 
 - 按键是全局的，由系统决定投给哪个应用；其它播放器可能抢走。
 - 无曲名、封面、播放状态。
+- 无进度条，也不能重播 —— 这两项都要定位，而该通路没有 SMTC 会话可定位。
 
 音量控制在两种模式下均可用（走 Core Audio，与 SMTC 无关）。
 
 若 QQ音乐 以管理员身份运行，UIPI 会拦截普通权限进程的按键注入，此时 cross-next
 也需以管理员身份运行。
+
+## 重播当前曲目
+
+SMTC 没有"重播"原语，所以这是定位到起点（`seek(0)`）。两种模式，页面上那个胶囊
+按钮切换，选择记在浏览器里：
+
+| 模式 | 暂停时按下 | 播放时按下 |
+|---|---|---|
+| 仅回开头 | 回到开头，保持暂停 | 从头开始播 |
+| 重播并播放 | 回到开头并开始播放 | 从头开始播 |
+
+快捷键 `Home`，跟随当前模式。`remote.exe` 两种模式各有一个子命令（`restart`/`replay`），
+不读浏览器里的那个选择。
+
+仅 `smtc` 模式可用，按钮在 `mediakey` 模式下隐藏。
 
 ## 用鼠标侧键切歌
 
@@ -141,6 +157,8 @@ powershell -ExecutionPolicy Bypass -File update.ps1
 remote.exe next          下一首
 remote.exe prev          上一首
 remote.exe playpause     播放/暂停
+remote.exe restart       跳回当前曲目开头
+remote.exe replay        跳回开头并开始播放
 remote.exe vol +10       音量加 10 个百分点
 remote.exe vol 60        音量设为 60%
 remote.exe mute          静音开关
@@ -235,7 +253,7 @@ CSP。单连接数、请求行长度、请求体大小都有上限，其中前�
 |---|---|
 | `GET /` | 内嵌前端页面 |
 | `GET /api/state` | 当前曲目、播放状态、音量、控制模式 |
-| `POST /api/cmd` | `{"action":"next"\|"prev"\|"playpause"}`；`{"action":"seek","position":<秒>}` |
+| `POST /api/cmd` | `{"action":"next"\|"prev"\|"playpause"\|"restart"\|"replay"}`；`{"action":"seek","position":<秒>}` |
 | `POST /api/volume` | `{"level":0.0-1.0}` 或 `{"mute":true}` |
 | `GET /api/thumbnail` | 封面字节，ETag 为内容哈希；`mediakey` 模式恒 404 |
 | `GET /api/sessions` | 所有 SMTC 会话 |

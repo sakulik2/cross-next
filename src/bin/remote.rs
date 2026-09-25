@@ -7,6 +7,8 @@
 //!   remote.exe next
 //!   remote.exe prev
 //!   remote.exe playpause
+//!   remote.exe restart      跳回当前曲目开头
+//!   remote.exe replay       跳回开头并开始播放
 //!   remote.exe vol +10      音量相对调整（百分点）
 //!   remote.exe vol 60       音量设为 60%
 //!   remote.exe mute
@@ -57,6 +59,8 @@ fn usage() -> String {
        remote.exe next
        remote.exe prev
        remote.exe playpause
+       remote.exe restart     跳回当前曲目开头
+       remote.exe replay      跳回开头并开始播放
        remote.exe vol +10     音量加 10 个百分点
        remote.exe vol 60      音量设为 60%
        remote.exe mute        静音开关

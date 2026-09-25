@@ -316,6 +316,9 @@ fn route(req: &Request, token: &str, media: &Remote, bound: Option<Ipv4Addr>) ->
                 "next" => Command::Next,
                 "prev" => Command::Prev,
                 "playpause" => Command::TogglePlayPause,
+                // 重播当前曲目。restart 只跳回起点，replay 跳回后顺带播放。
+                "restart" => Command::Restart,
+                "replay" => Command::Replay,
                 // seek 需要 position 参数（秒）。
                 "seek" => match json_num(&req.body, "position") {
                     Some(secs) => Command::Seek(secs),
