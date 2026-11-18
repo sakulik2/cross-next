@@ -31,6 +31,7 @@
 | 文件 | 运行在 | 用途 |
 |---|---|---|
 | `cross-next.exe` | 放音乐的机器 | 服务端，必需 |
+| `desktop.exe` | 鼠标所在的机器 | 桌面小组件 + 任务栏按钮 + 全局组合键 |
 | `listen.exe` | 鼠标所在的机器 | 常驻，抢媒体键转发 |
 | `remote.exe` | 鼠标所在的机器 | 一次性命令 |
 | `probe.exe` | 放音乐的机器 | 排查 SMTC 与音频会话 |
@@ -87,7 +88,7 @@ cargo build --release
 powershell -ExecutionPolicy Bypass -File update.ps1
 ```
 
-取最新发布，停掉在跑的 `cross-next.exe` 与 `listen.exe`，覆盖 exe，再按原样重启 ——
+取最新发布，停掉在跑的 `cross-next.exe`、`listen.exe` 与 `desktop.exe`，覆盖 exe，再按原样重启 ——
 更新前没在跑的不会被启动。先下载校验再停服务，所以网断了或包坏了只是没更新成，
 服务照旧。已经是最新版时直接跳过，不会白停一次。
 
@@ -97,7 +98,7 @@ powershell -ExecutionPolicy Bypass -File update.ps1
 `config.json` 不在压缩包里，所以覆盖不会动它，token 不变，浏览器和 `remote.json` 那两份
 副本继续有效。解压到**新目录**才会生成新 token —— 那种情况把旧的 `config.json` 带过去。
 
-确认在跑的是哪一版：`cross-next.exe --version`（`listen.exe`、`remote.exe` 同样支持，
+确认在跑的是哪一版：`cross-next.exe --version`（`listen.exe`、`remote.exe`、`desktop.exe` 同样支持，
 两个探针打在横幅里）。托盘图标的悬停提示也带版本号 —— 双击启动看不到横幅，那里是唯一的出处。
 
 ### config.json
@@ -198,6 +199,64 @@ listen.exe
 ```
 
 运行期间同样独占媒体键，退出即恢复。
+
+## 桌面小组件：desktop.exe
+
+不开浏览器的遥控界面，放在鼠标所在的机器上。和网页一样只是界面，走同一套 API，
+连接配置读 `remote.json`（格式见上文 `remote.exe`）。
+
+```
+desktop.exe            启动；已在运行则把窗口叫出来
+desktop.exe --stop     关掉正在运行的实例
+```
+
+三种操作途径：
+
+| 途径 | 适用 |
+|---|---|
+| 小组件窗口 | 无边框窗口模式的游戏、副屏 |
+| 任务栏缩略图按钮 | 鼠标悬停任务栏图标，预览下方的 ⏮ ⏯ ⏭ |
+| 全局组合键 | 独占全屏的游戏（前两种此时看不见） |
+
+小组件：
+
+- 默认置顶，位于主屏右下角。按钮以外的地方都能拖，位置会记住。
+- **点它不抢焦点**：游戏不会因此失去焦点或松开鼠标。右键菜单例外。
+- 滚轮调 QQ音乐 音量。
+- 右键菜单：置顶开关、最小化到任务栏、在浏览器中打开、组合键状态、退出。
+
+### 组合键
+
+| 操作 | 默认 |
+|---|---|
+| 上一首 / 下一首 | Ctrl+Alt+← / → |
+| 播放/暂停 | Ctrl+Alt+空格 |
+| 音量 + / - | Ctrl+Alt+↑ / ↓（按住连续调） |
+| 静音 | 未设置 |
+
+在 exe 同目录的 `desktop.json` 里改，首次运行时生成：
+
+```json
+{
+  "topmost": true,
+  "hotkey_prev": "Ctrl+Alt+Left",
+  "hotkey_next": "Ctrl+Alt+Right",
+  "hotkey_playpause": "Ctrl+Alt+Space",
+  "hotkey_volume_up": "Ctrl+Alt+Up",
+  "hotkey_volume_down": "Ctrl+Alt+Down",
+  "hotkey_mute": ""
+}
+```
+
+写法是修饰键（`Ctrl` `Alt` `Shift` `Win`）加一个主键，用 `+` 连接，不区分大小写。
+主键可以是字母、数字、`F1`-`F24`、`Left` `Right` `Up` `Down` `Space` `Home` `End`
+`PageUp` `PageDown` `Insert` `Delete` `Pause`。除 F 键外必须带修饰键。留空表示不绑定。
+改完从右键菜单「组合键 → 重新载入」生效，不用重启。
+
+被其它程序占用的组合键注册不上，启动时小组件上会提示，右键菜单里标出是哪个。
+部分老 Intel 核显驱动把 Ctrl+Alt+方向键用作旋转屏幕，会占掉默认键位。
+
+与 `listen.exe` 抢的媒体键不重叠，两者可以同时运行。
 
 ## 排查
 
