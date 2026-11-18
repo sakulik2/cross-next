@@ -81,13 +81,13 @@ try {
     }
 
     # 停服务之前先确认新文件真的在，别把用户留在「两头空」的状态。
-    $exes = @("cross-next.exe", "probe.exe", "remote.exe", "keyprobe.exe", "listen.exe")
+    $exes = @("cross-next.exe", "probe.exe", "remote.exe", "keyprobe.exe", "listen.exe", "desktop.exe")
     foreach ($exe in $exes) {
         if (-not (Test-Path (Join-Path $src $exe))) {
             throw "压缩包里缺 $exe，中止更新（当前安装未被改动）"
         }
     }
-    Write-Host "  校验通过，5 个 exe 齐全"
+    Write-Host "  校验通过，$($exes.Count) 个 exe 齐全"
 
     # 已经是最新版就别白停一次服务。
     #
@@ -117,10 +117,11 @@ try {
     # 记下原来在跑什么，更新完按原样恢复 —— 用户没要求改变运行状态。
     $ranServer = $null -ne (Get-Process -Name "cross-next" -ErrorAction SilentlyContinue)
     $ranListen = $null -ne (Get-Process -Name "listen" -ErrorAction SilentlyContinue)
+    $ranDesktop = $null -ne (Get-Process -Name "desktop" -ErrorAction SilentlyContinue)
 
     # 用各自的 --stop 而不是 Stop-Process：走正常退出路径才会摘掉托盘图标
-    # （否则留一个幽灵）、才会 UnregisterHotKey 放开媒体键。
-    foreach ($item in @(@("cross-next", $ranServer), @("listen", $ranListen))) {
+    # （否则留一个幽灵）、才会 UnregisterHotKey 放开媒体键与组合键。
+    foreach ($item in @(@("cross-next", $ranServer), @("listen", $ranListen), @("desktop", $ranDesktop))) {
         $name = $item[0]
         if (-not $item[1]) { continue }
         $exe = Join-Path $InstallDir "$name.exe"
@@ -131,7 +132,7 @@ try {
 
     # --stop 返回时窗口已消失，但进程对象要再一瞬才释放 exe 的文件锁。
     # 轮询到真的没了，比睡一个固定时长可靠。
-    foreach ($name in @("cross-next", "listen")) {
+    foreach ($name in @("cross-next", "listen", "desktop")) {
         for ($i = 0; $i -lt 100; $i++) {
             if (-not (Get-Process -Name $name -ErrorAction SilentlyContinue)) { break }
             Start-Sleep -Milliseconds 50
@@ -158,6 +159,10 @@ try {
     if ($ranListen) {
         Write-Host "  重启 listen.exe"
         Start-Process -FilePath (Join-Path $InstallDir "listen.exe") -WorkingDirectory $InstallDir
+    }
+    if ($ranDesktop) {
+        Write-Host "  重启 desktop.exe"
+        Start-Process -FilePath (Join-Path $InstallDir "desktop.exe") -WorkingDirectory $InstallDir
     }
 
     Write-Host ""

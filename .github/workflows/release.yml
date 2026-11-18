@@ -47,8 +47,8 @@ jobs:
         run: |
           $out = "cross-next-x86_64-pc-windows-msvc"
           New-Item -ItemType Directory -Path $out | Out-Null
-          # 五个二进制：服务端、排查工具、两个客户端、按键探测
-          foreach ($exe in "cross-next", "probe", "remote", "keyprobe", "listen") {
+          # 六个二进制：服务端、排查工具、三个客户端、按键探测
+          foreach ($exe in "cross-next", "probe", "remote", "keyprobe", "listen", "desktop") {
             Copy-Item "target/release/$exe.exe" $out
           }
           Copy-Item README.md, LICENSE $out
@@ -65,7 +65,7 @@ jobs:
             Windows x64。解压后哪个 exe 放哪台机器见 README 的「产物」表：
 
             - `cross-next.exe` — 放音乐的那台，服务端，必需
-            - `listen.exe` / `remote.exe` — 鼠标所在的那台
+            - `desktop.exe` / `listen.exe` / `remote.exe` — 鼠标所在的那台
             - `probe.exe` / `keyprobe.exe` — 排查用，可选
 
             只用浏览器遥控时只需 `cross-next.exe`，网页已编进 exe。
