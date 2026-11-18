@@ -133,9 +133,38 @@ fn request(
     path: &str,
     body: Option<&str>,
 ) -> Result<String, String> {
+    let (status, body) = fetch(config, method, path, body)?;
+
+    if status == 401 {
+        return Err(
+            "token 无效。检查 remote.json 里的 token 和服务端 config.json 是否一致。".into(),
+        );
+    }
+    if status != 200 {
+        return Err(format!("服务端返回 HTTP {status}"));
+    }
+
+    Ok(String::from_utf8_lossy(&body).into_owned())
+}
+
+/// 浏览器里打开的完整地址（带 token）。
+pub fn web_url(config: &Config) -> String {
+    format!("http://{}:{}/?t={}", config.host, config.port, config.token)
+}
+
+/// 发一个请求，原样返回状态码与响应体字节。
+///
+/// `Err` 只表示**传输层**失败（连不上、超时、读写中断）；HTTP 层的 401、404
+/// 都在 `Ok` 里，由调用方解释。`desktop.exe` 要靠这个区分「连不上」和「token 错」，
+/// 拉封面时还要原始字节 —— 走 [`request`] 的话图片会被 `from_utf8_lossy` 毁掉。
+pub fn fetch(
+    config: &Config,
+    method: &str,
+    path: &str,
+    body: Option<&str>,
+) -> Result<(u16, Vec<u8>), String> {
     let addr = format!("{}:{}", config.host, config.port);
-    let mut stream = TcpStream::connect(&addr)
-        .map_err(|e| format!("连不上 {addr}：{e}\n\ncross-next 在那台机器上跑着吗？"))?;
+    let mut stream = connect(&addr)?;
     stream.set_read_timeout(Some(TIMEOUT)).ok();
     stream.set_write_timeout(Some(TIMEOUT)).ok();
 
@@ -204,14 +233,42 @@ fn request(
             .map_err(|e| format!("读取响应体失败：{e}"))?;
     }
 
-    if status == 401 {
-        return Err(
-            "token 无效。检查 remote.json 里的 token 和服务端 config.json 是否一致。".into(),
-        );
-    }
-    if status != 200 {
-        return Err(format!("服务端返回 HTTP {status}"));
-    }
+    Ok((status, body))
+}
 
-    Ok(String::from_utf8_lossy(&body).into_owned())
+/// 带超时的连接。
+///
+/// `TcpStream::connect` 自己没有超时：对端机器休眠或关机时，Windows 要等 SYN
+/// 重传耗尽（约 21 秒）才放弃。按键的手感和常驻界面的轮询都等不起这么久。
+/// `host` 可能是主机名，所以先解析，逐个地址试。
+fn connect(addr: &str) -> Result<TcpStream, String> {
+    use std::net::ToSocketAddrs;
+
+    let hint = "cross-next 在那台机器上跑着吗？";
+    let addrs = addr.to_socket_addrs().map_err(|e| {
+        format!(
+            "连不上 {addr}：{e}
+
+{hint}"
+        )
+    })?;
+    let mut last = None;
+    for a in addrs {
+        match TcpStream::connect_timeout(&a, TIMEOUT) {
+            Ok(s) => return Ok(s),
+            Err(e) => last = Some(e),
+        }
+    }
+    Err(match last {
+        Some(e) => format!(
+            "连不上 {addr}：{e}
+
+{hint}"
+        ),
+        None => format!(
+            "连不上 {addr}：解析不出地址
+
+{hint}"
+        ),
+    })
 }
