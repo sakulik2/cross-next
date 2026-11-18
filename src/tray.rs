@@ -20,7 +20,7 @@
 //!   要等鼠标划过去系统才发现进程没了。
 //! - `TaskbarCreated` 必须处理，见 [`run`] 里的注释。
 
-use crate::ui;
+use crate::{icon, ui};
 use std::net::SocketAddr;
 use std::sync::OnceLock;
 use std::sync::atomic::{AtomicIsize, AtomicU32, Ordering};
@@ -32,9 +32,9 @@ use windows::Win32::UI::WindowsAndMessaging::{
     AppendMenuW, CreatePopupMenu, CreateWindowExW, DefWindowProcW, DestroyMenu, DestroyWindow,
     DispatchMessageW, GetCursorPos, GetMessageW, GetSystemMetrics, HICON, MF_SEPARATOR, MF_STRING,
     MSG, PostMessageW, PostQuitMessage, RegisterClassW, RegisterWindowMessageW, SM_CXSMICON,
-    SM_CYSMICON, SW_SHOWNORMAL, SetForegroundWindow, TPM_RIGHTBUTTON, TrackPopupMenu,
-    TranslateMessage, WINDOW_EX_STYLE, WINDOW_STYLE, WM_COMMAND, WM_DESTROY, WM_LBUTTONDBLCLK,
-    WM_NULL, WM_RBUTTONUP, WNDCLASSW,
+    SW_SHOWNORMAL, SetForegroundWindow, TPM_RIGHTBUTTON, TrackPopupMenu, TranslateMessage,
+    WINDOW_EX_STYLE, WINDOW_STYLE, WM_COMMAND, WM_DESTROY, WM_LBUTTONDBLCLK, WM_NULL, WM_RBUTTONUP,
+    WNDCLASSW,
 };
 use windows::core::{PCWSTR, w};
 
@@ -194,49 +194,12 @@ fn create_window() -> Option<HWND> {
     }
 }
 
-/// 从内嵌的 .ico 里挑一张合适尺寸的，造出 `HICON`。
-///
-/// `CreateIconFromResourceEx` 要的是**单张图**的资源位，不是带目录头的 .ico 文件 ——
-/// 整个文件喂进去会失败。所以这里手解 `ICONDIR`：6 字节头，之后每张图一条 16 字节的
-/// `ICONDIRENTRY`。走这条路是为了不引入 winres 之类的构建期依赖。
+/// 从内嵌的 .ico 里挑一张合适尺寸的，造出 `HICON`。解析细节见 [`icon`]。
 fn load_icon() -> Option<HICON> {
-    use windows::Win32::UI::WindowsAndMessaging::{CreateIconFromResourceEx, IMAGE_FLAGS};
-
     let want = unsafe { GetSystemMetrics(SM_CXSMICON) }.max(16);
-    let want_y = unsafe { GetSystemMetrics(SM_CYSMICON) }.max(16);
-
-    let bits = pick_image(ICON_BYTES, want)?;
-
-    // dwVer 固定 0x00030000 —— 这是 .ico 资源格式的版本号，不是系统版本。
-    unsafe { CreateIconFromResourceEx(bits, true, 0x0003_0000, want, want_y, IMAGE_FLAGS(0)) }.ok()
+    icon::load(ICON_BYTES, want)
 }
 
-/// 从 .ico 的字节里切出宽度最接近 `want` 的那张图。
-///
-/// 单独拎出来是为了可测：字节偏移算错不会报错，只会让图标神秘地不出现，
-/// 而那要跑起来才看得见。下面的测试直接拿真实的 `assets/tray.ico` 验。
-///
-/// 所有取值都走 `get`，畸形文件返回 `None` 而不是 panic —— 这个字节数组是编进
-/// exe 的，不该崩，但真崩了就把托盘搭进去了。
-fn pick_image(ico: &[u8], want: i32) -> Option<&[u8]> {
-    let count = u16::from_le_bytes(ico.get(4..6)?.try_into().ok()?) as usize;
-
-    // 挑宽度最接近的一张。宽度字段只有一个字节，0 表示 256。
-    let mut best: Option<(i32, usize, usize)> = None; // (差值, offset, len)
-    for i in 0..count {
-        let e = ico.get(6 + i * 16..6 + i * 16 + 16)?;
-        let width = if e[0] == 0 { 256 } else { e[0] as i32 };
-        let len = u32::from_le_bytes(e[8..12].try_into().ok()?) as usize;
-        let off = u32::from_le_bytes(e[12..16].try_into().ok()?) as usize;
-        let diff = (width - want).abs();
-        if best.is_none_or(|(d, ..)| diff < d) {
-            best = Some((diff, off, len));
-        }
-    }
-
-    let (_, off, len) = best?;
-    ico.get(off..off.checked_add(len)?)
-}
 /// 系统默认应用图标。自制图标解析失败时的退路。
 fn system_icon() -> Option<HICON> {
     use windows::Win32::UI::WindowsAndMessaging::{IDI_APPLICATION, LoadIconW};
@@ -437,49 +400,5 @@ unsafe extern "system" fn wndproc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: 
         }
 
         _ => unsafe { DefWindowProcW(hwnd, msg, wparam, lparam) },
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    /// 内嵌的图标必须是能解出图来的 —— 换图标或改生成脚本时这条会兜住。
-    #[test]
-    fn embedded_icon_parses() {
-        for want in [16, 20, 24, 32, 48] {
-            let bits = pick_image(ICON_BYTES, want).expect("应能选出一张图");
-            // BITMAPINFOHEADER 的 biSize 恒为 40，用它确认切的位置对齐到了图头
-            // 而不是文件中间某处。
-            assert_eq!(u32::from_le_bytes(bits[0..4].try_into().unwrap()), 40);
-            // biHeight 是 XOR + AND 两块之和，所以应是宽的两倍。
-            let w = i32::from_le_bytes(bits[4..8].try_into().unwrap());
-            let h = i32::from_le_bytes(bits[8..12].try_into().unwrap());
-            assert_eq!(h, w * 2, "{want}px 这张的高度字段不对");
-        }
-    }
-
-    /// 16 和 32 两档要真的分得开，别都落到同一张上。
-    #[test]
-    fn picks_nearest_size() {
-        let small = pick_image(ICON_BYTES, 16).unwrap();
-        let large = pick_image(ICON_BYTES, 32).unwrap();
-        assert_eq!(i32::from_le_bytes(small[4..8].try_into().unwrap()), 16);
-        assert_eq!(i32::from_le_bytes(large[4..8].try_into().unwrap()), 32);
-    }
-
-    /// 畸形输入返回 None，不 panic —— 越界读会把整个进程带走。
-    #[test]
-    fn malformed_is_none() {
-        assert!(pick_image(&[], 16).is_none());
-        assert!(pick_image(&[0, 0, 1, 0], 16).is_none()); // 头被截断
-        // 声称有一张图，但目录项不全
-        assert!(pick_image(&[0, 0, 1, 0, 1, 0, 16, 16], 16).is_none());
-        // 目录项完整但偏移越界
-        let mut bad = vec![0, 0, 1, 0, 1, 0];
-        bad.extend_from_slice(&[16, 16, 0, 0, 1, 0, 32, 0]);
-        bad.extend_from_slice(&999u32.to_le_bytes()); // 长度
-        bad.extend_from_slice(&999u32.to_le_bytes()); // 偏移
-        assert!(pick_image(&bad, 16).is_none());
     }
 }

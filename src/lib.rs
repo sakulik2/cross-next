@@ -2,6 +2,7 @@
 
 pub mod client;
 pub mod http;
+pub mod icon;
 pub mod jsonlite;
 pub mod keepawake;
 pub mod media;

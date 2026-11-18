@@ -1,4 +1,10 @@
-// 生成 assets/tray.ico —— 托盘图标（蓝底圆角方块 + 白色八分音符）。
+// 生成 assets/ 下的图标：
+//
+//   tray.ico                           程序图标（蓝底圆角方块 + 白色八分音符），
+//                                      托盘与 desktop.exe 的窗口/任务栏图标共用
+//   prev.ico play.ico pause.ico next.ico
+//                                      desktop.exe 的按钮字形：白色、透明底，
+//                                      小组件与任务栏缩略图按钮共用
 //
 // 为什么用脚本生成而不是直接提交一个画好的 .ico：仓库里的二进制 blob 没人能 review，
 // 改一版颜色也无从下手。这个脚本只用 Node 标准库（和 tests/render.mjs 一个路子），
@@ -8,16 +14,22 @@
 //
 // 它同时在终端打一份 ASCII 预览，改完形状不必真去看图就能判断还认不认得出来。
 //
-// 图标不进构建流程 —— tray.rs 用 include_bytes! 把它编进 exe，所以改完这个脚本
-// 要重新跑一次并提交 assets/tray.ico，否则 exe 里还是旧图。
+// 图标不进构建流程 —— 各处用 include_bytes! 把它们编进 exe，所以改完这个脚本
+// 要重新跑一次并提交 assets/ 下的产物，否则 exe 里还是旧图。
 
 import { writeFileSync, mkdirSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 
-/// 两档尺寸：16 给托盘（SM_CXSMICON 在 100% 缩放下就是 16），32 给高 DPI 与
-/// Alt-Tab / 任务管理器。tray.rs 会按实际的小图标尺寸挑最接近的一张。
-const SIZES = [16, 32];
+/// 程序图标的尺寸档：小图标（托盘、标题）在 100%/125%/150%/200% 缩放下是
+/// 16/20/24/32，任务栏与 Alt-Tab 要到 48。64-128 给 desktop.exe 画大图用
+/// （小组件的占位图标在 200% 缩放下是 72 像素）—— 从 48 放大上去边缘全是锯齿，
+/// 所以那边一律挑不小于目标的一张往下缩，这几档就是为它备的。
+const SIZES = [16, 20, 24, 32, 48, 64, 96, 128];
+
+/// 按钮字形的尺寸档：缩略图按钮用小图标尺寸（16-32），小组件上画 20-24 DIP，
+/// 到 200% 缩放是 40-48，250% 是 50-60，由 64 缩下来。
+const GLYPH_SIZES = [16, 20, 24, 32, 40, 48, 64];
 
 /// 每像素 4x4 超采样。图形是解析式定义的，靠超采样拿抗锯齿，
 /// 不必自己写边缘处理。
@@ -33,6 +45,10 @@ const C1 = [0x2a, 0x54, 0xe0];
 function inPlate(x, y) {
   const m = 0.03;
   const r = 0.22;
+  // 边距对直边同样生效。之前只有圆角往里缩了，四条直边却顶到画布边缘，
+  // 圆弧与直边接不上，每个角都有一个台阶 —— 16/32 像素下看不出，放大到
+  // desktop.exe 的 72 像素才露出来。
+  if (x < m || x > 1 - m || y < m || y > 1 - m) return false;
   const dx = Math.max(m + r - x, x - (1 - m - r), 0);
   const dy = Math.max(m + r - y, y - (1 - m - r), 0);
   return dx > 0 && dy > 0 ? dx * dx + dy * dy <= r * r : true;
@@ -115,6 +131,48 @@ function render(size) {
   return px;
 }
 
+// ---- 按钮字形：同样是 [0,1] 归一化坐标 ----
+
+/// 点是否在三角形内（顶点顺序无关）。
+function inTri(x, y, [ax, ay], [bx, by], [cx, cy]) {
+  const d1 = (x - bx) * (ay - by) - (ax - bx) * (y - by);
+  const d2 = (x - cx) * (by - cy) - (bx - cx) * (y - cy);
+  const d3 = (x - ax) * (cy - ay) - (cx - ax) * (y - ay);
+  const neg = d1 < 0 || d2 < 0 || d3 < 0;
+  const pos = d1 > 0 || d2 > 0 || d3 > 0;
+  return !(neg && pos);
+}
+
+const inRect = (x, y, x0, y0, x1, y1) => x >= x0 && x <= x1 && y >= y0 && y <= y1;
+
+/// 播放三角的几何重心在左边三分之一处，看着偏左，所以整体右移一点做视觉居中。
+const GLYPHS = {
+  play: (x, y) => inTri(x, y, [0.3, 0.17], [0.3, 0.83], [0.86, 0.5]),
+  pause: (x, y) => inRect(x, y, 0.25, 0.19, 0.42, 0.81) || inRect(x, y, 0.58, 0.19, 0.75, 0.81),
+  next: (x, y) => inTri(x, y, [0.18, 0.2], [0.18, 0.8], [0.6, 0.5]) || inRect(x, y, 0.68, 0.2, 0.8, 0.8),
+  prev: (x, y) => inTri(x, y, [0.82, 0.2], [0.82, 0.8], [0.4, 0.5]) || inRect(x, y, 0.2, 0.2, 0.32, 0.8),
+};
+
+/// 白色字形，alpha 即覆盖率。直通 alpha，同上。
+function renderGlyph(size, inside) {
+  const px = new Uint8Array(size * size * 4);
+  const step = 1 / (size * SS);
+  for (let row = 0; row < size; row++) {
+    for (let col = 0; col < size; col++) {
+      let hit = 0;
+      for (let sy = 0; sy < SS; sy++) {
+        for (let sx = 0; sx < SS; sx++) {
+          if (inside((col * SS + sx + 0.5) * step, (row * SS + sy + 0.5) * step)) hit++;
+        }
+      }
+      const i = (row * size + col) * 4;
+      px[i] = px[i + 1] = px[i + 2] = 255;
+      px[i + 3] = Math.round((hit / (SS * SS)) * 255);
+    }
+  }
+  return px;
+}
+
 /// 打包成一张 ICONIMAGE：BITMAPINFOHEADER + XOR 位图 + AND 掩码。
 function iconImage(size, px) {
   const header = Buffer.alloc(40);
@@ -153,7 +211,7 @@ function buildIco(images) {
   let offset = dir.length;
   images.forEach(({ size, data }, i) => {
     const e = 6 + i * 16;
-    // 宽高各占一个字节，256 要写 0 —— 这里最大 32，用不上那条特例。
+    // 宽高各占一个字节，256 要写 0 —— 这里最大 128，用不上那条特例。
     dir.writeUInt8(size, e);
     dir.writeUInt8(size, e + 1);
     dir.writeUInt8(0, e + 2); // 调色板颜色数：真彩色为 0
@@ -191,15 +249,25 @@ function preview(size, px) {
 }
 
 const root = join(dirname(fileURLToPath(import.meta.url)), "..");
-const out = join(root, "assets", "tray.ico");
+mkdirSync(join(root, "assets"), { recursive: true });
 
-const images = SIZES.map((size) => {
-  const px = render(size);
-  console.log(`\n${size}x${size}:`);
-  console.log(preview(size, px));
-  return { size, data: iconImage(size, px) };
-});
+/// 写一个 .ico，并打印 `show` 那一档的预览。
+function emit(name, sizes, draw, show) {
+  const images = sizes.map((size) => {
+    const px = draw(size);
+    if (show.includes(size)) {
+      console.log(`
+${name} ${size}x${size}:`);
+      console.log(preview(size, px));
+    }
+    return { size, data: iconImage(size, px) };
+  });
+  const out = join(root, "assets", name);
+  writeFileSync(out, buildIco(images));
+  console.log(`已写入 ${out}`);
+}
 
-mkdirSync(dirname(out), { recursive: true });
-writeFileSync(out, buildIco(images));
-console.log(`\n已写入 ${out}`);
+emit("tray.ico", SIZES, render, [16, 32]);
+for (const [name, inside] of Object.entries(GLYPHS)) {
+  emit(`${name}.ico`, GLYPH_SIZES, (size) => renderGlyph(size, inside), [20]);
+}
