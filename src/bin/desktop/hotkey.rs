@@ -1,8 +1,39 @@
 //! 全局组合键：`"Ctrl+Alt+Left"` 这样的字符串 ↔ `RegisterHotKey` 的参数。
 //!
 //! 这是独占全屏游戏里唯一不用切出去就能操作的途径 —— 小组件和任务栏按钮都得先
-//! 回到桌面才看得见。`listen.exe` 抢的是媒体键，没有媒体键的键盘用不上，所以这里
-//! 另起一套可配置的组合键。两者键位不重叠，可以同时开着。
+//! 回到桌面才看得见。没有媒体键的键盘也要能用，所以这套组合键可配置。
+//!
+//! 媒体键另算（[`MEDIA_KEYS`]）：裸键、不可改键位，与 `listen.exe` 抢的是同三个。
+
+use std::net::{IpAddr, Ipv4Addr};
+
+/// 接管的媒体键与对应操作，与 `listen.exe` 一致。键码就是 `VK_MEDIA_*`。
+///
+/// 不含音量键：那三个调的是**本机**的系统音量，抢走它们会让鼠标所在这台机器
+/// 没法调音量。
+pub const MEDIA_KEYS: [(u32, Action, &str); 3] = [
+    (0xB0, Action::Next, "下一首"),
+    (0xB1, Action::Prev, "上一首"),
+    (0xB3, Action::PlayPause, "播放/暂停"),
+];
+
+/// 服务端是不是就在本机。是的话不能接管媒体键：服务端在 `mediakey` 模式下自己
+/// 就是发媒体键（`SendInput`），注入的按键同样会触发 `RegisterHotKey` —— 我们抢下来
+/// 转发回去，它再发一次，无限循环地切歌。何况本机的媒体键本来就能直达 QQ音乐。
+///
+/// `host` 是主机名（非 IP、非 localhost）时判为不是本机：在 UI 线程上做 DNS 解析
+/// 可能卡住，而服务端只绑具体的内网 IP，`remote.json` 里填的通常就是那个 IP。
+pub fn is_local(host: &str, own: &[Ipv4Addr]) -> bool {
+    let host = host.trim();
+    if host.eq_ignore_ascii_case("localhost") {
+        return true;
+    }
+    match host.parse::<IpAddr>() {
+        Ok(IpAddr::V4(ip)) => ip.is_loopback() || ip.is_unspecified() || own.contains(&ip),
+        Ok(IpAddr::V6(ip)) => ip.is_loopback(),
+        Err(_) => false,
+    }
+}
 
 /// 组合键能触发的操作。
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -208,6 +239,27 @@ mod tests {
         );
         assert!(parse("F25").is_err());
         assert!(parse("F0").is_err());
+    }
+
+    #[test]
+    fn local_server_detected() {
+        let own = [Ipv4Addr::new(192, 168, 1, 20)];
+        assert!(is_local("192.168.1.20", &own));
+        assert!(is_local(" 192.168.1.20 ", &own));
+        assert!(is_local("127.0.0.1", &own));
+        assert!(is_local("LocalHost", &own));
+        assert!(is_local("::1", &own));
+        assert!(!is_local("192.168.1.21", &own));
+        assert!(!is_local("desktop-pc", &own), "主机名不解析，按远端处理");
+    }
+
+    #[test]
+    fn media_keys_never_include_volume() {
+        // 音量键属于本机，抢走就调不了本机音量了。
+        for (vk, a, _) in MEDIA_KEYS {
+            assert!((0xB0..=0xB3).contains(&vk), "{vk:#x}");
+            assert!(!a.repeats(), "{a:?}");
+        }
     }
 
     #[test]

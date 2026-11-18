@@ -53,8 +53,8 @@ const BINDINGS: [(i32, u16, &str, &str); 3] = [
     (3, VK_MEDIA_PLAY_PAUSE.0, "playpause", "播放/暂停"),
 ];
 
-/// 隐藏标记窗口的类名。够独特，不会和别的程序撞。
-const MARKER_CLASS: windows::core::PCWSTR = w!("CrossNextListenMarker");
+/// 隐藏标记窗口的类名。够独特，不会和别的程序撞。`desktop.exe` 也靠它找到我们。
+const MARKER_CLASS: windows::core::PCWSTR = ui::LISTEN_MARKER;
 
 /// 消息框标题。
 const TITLE: &str = "cross-next listen";
@@ -127,12 +127,19 @@ fn main() {
     if registered.is_empty() {
         let _ = unsafe { DestroyWindow(marker) };
         // 走到这里说明占用方不是我们自己的实例（那个已经被关掉了）。
-        // Win32 查不出热键属于谁，所以只能列出常见的占用方。
-        ui::fail(
-            TITLE,
+        // Win32 查不出热键属于谁，只认得出 desktop.exe（它也接管媒体键，而且它
+        // 启动时会把我们关掉），其余只能列出常见的占用方。
+        let desktop =
+            unsafe { FindWindowW(w!("CrossNextDesktop"), None) }.is_ok_and(|h| !h.is_invalid());
+        let msg = if desktop {
+            "媒体键全部注册失败 —— desktop.exe 正在运行，媒体键已由它接管，\
+             不需要再开 listen.exe。\n\n\
+             要改回用 listen.exe，先在小组件右键菜单里关掉「接管媒体键」。"
+        } else {
             "媒体键全部注册失败 —— 被其它程序独占了。\n\n\
-             常见占用方：播放器的全局热键设置、键盘厂商驱动、其它媒体控制小工具。",
-        );
+             常见占用方：播放器的全局热键设置、键盘厂商驱动、其它媒体控制小工具。"
+        };
+        ui::fail(TITLE, msg);
         return;
     }
 
@@ -182,36 +189,10 @@ fn main() {
     let _ = unsafe { DestroyWindow(marker) };
 }
 
-/// 找到并关掉已有实例，返回是否真的关了一个。
-///
-/// 发 `WM_CLOSE` 而不是强杀：旧实例走正常退出路径才能 `UnregisterHotKey`，
-/// 否则热键可能残留到系统回收为止。
+/// 找到并关掉已有实例，返回是否真的关了一个。等它真的放开热键才返回，
+/// 否则接下来的注册会和旧实例撞上。
 fn stop_previous() -> bool {
-    let found = unsafe { FindWindowW(MARKER_CLASS, None) };
-    let Ok(existing) = found else {
-        return false; // 没有旧实例
-    };
-    if existing.is_invalid() {
-        return false;
-    }
-
-    if unsafe { PostMessageW(Some(existing), WM_CLOSE, WPARAM(0), LPARAM(0)) }.is_err() {
-        return false;
-    }
-
-    // 等它真的放开热键。轮询窗口是否消失，比睡一个固定时长可靠 ——
-    // 睡太短会抢不到热键，睡太长则白等。
-    for _ in 0..50 {
-        std::thread::sleep(std::time::Duration::from_millis(20));
-        match unsafe { FindWindowW(MARKER_CLASS, None) } {
-            Ok(h) if !h.is_invalid() => continue,
-            _ => return true, // 窗口已消失，热键已释放
-        }
-    }
-
-    // 超时：旧实例卡住了。仍然返回 true，让调用方继续尝试注册 ——
-    // 注册失败会给出明确提示，比在这里下结论好。
-    true
+    ui::close_instance(MARKER_CLASS, std::time::Duration::from_secs(1))
 }
 
 /// 建隐藏标记窗口。它是单实例机制的锚点，不显示任何界面。

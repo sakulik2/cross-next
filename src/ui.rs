@@ -76,6 +76,37 @@ pub fn box_message(title: &str, msg: &str, warn: bool) {
     }
 }
 
+/// `listen.exe` 隐藏标记窗口的类名。`listen` 靠它接管自己的旧实例，`desktop` 靠它
+/// 找到正在运行的 `listen` 并关掉 —— 两者都要独占媒体键，同时开着只有一个拿得到。
+pub const LISTEN_MARKER: windows::core::PCWSTR = windows::core::w!("CrossNextListenMarker");
+
+/// 找到某个窗口类的窗口，发 `WM_CLOSE` 请它自己退出，轮询到窗口消失（最多
+/// `wait`）。返回是否找到并通知了一个。
+///
+/// 发 `WM_CLOSE` 而不是强杀：对方走正常退出路径，才会 `UnregisterHotKey`。超时仍返回
+/// true —— 确实通知到了，调用方接下来的注册失败会比这里的布尔值更能说明问题。
+pub fn close_instance(class: windows::core::PCWSTR, wait: std::time::Duration) -> bool {
+    use windows::Win32::Foundation::{LPARAM, WPARAM};
+    use windows::Win32::UI::WindowsAndMessaging::{FindWindowW, PostMessageW, WM_CLOSE};
+
+    let find = || {
+        unsafe { FindWindowW(class, None) }
+            .ok()
+            .filter(|h| !h.is_invalid())
+    };
+    let Some(h) = find() else { return false };
+    if unsafe { PostMessageW(Some(h), WM_CLOSE, WPARAM(0), LPARAM(0)) }.is_err() {
+        return false;
+    }
+    let step = std::time::Duration::from_millis(20);
+    let mut waited = std::time::Duration::ZERO;
+    while waited < wait && find().is_some() {
+        std::thread::sleep(step);
+        waited += step;
+    }
+    true
+}
+
 /// 声明 Per-Monitor-v2 DPI 感知。
 ///
 /// 不声明的话高分屏上消息框与菜单会被系统按 96 DPI 渲染再拉伸，字发虚。

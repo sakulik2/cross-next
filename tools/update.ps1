@@ -156,7 +156,18 @@ try {
         # Start-Process 而不是直接调用：它是窗口子系统程序，直接调会让脚本挂着等。
         Start-Process -FilePath (Join-Path $InstallDir "cross-next.exe") -WorkingDirectory $InstallDir
     }
-    if ($ranListen) {
+    # 例外：listen.exe 与 desktop.exe 原来同时在跑时只重启 desktop。新版 desktop 自己
+    # 接管媒体键，listen 再起来只会抢不到键、弹一个「注册失败」的框（desktop 要接管时
+    # 也会把它关掉）。除非 desktop.json 里明确关了接管 —— 那时媒体键仍得靠 listen。
+    $desktopTakesKeys = $true
+    $desktopJson = Join-Path $InstallDir "desktop.json"
+    if ((Test-Path $desktopJson) -and
+        ((Get-Content -Raw -Encoding UTF8 $desktopJson) -match '"media_keys"\s*:\s*false')) {
+        $desktopTakesKeys = $false
+    }
+    if ($ranListen -and $ranDesktop -and $desktopTakesKeys) {
+        Write-Host "  不再启动 listen.exe：媒体键改由 desktop.exe 接管"
+    } elseif ($ranListen) {
         Write-Host "  重启 listen.exe"
         Start-Process -FilePath (Join-Path $InstallDir "listen.exe") -WorkingDirectory $InstallDir
     }

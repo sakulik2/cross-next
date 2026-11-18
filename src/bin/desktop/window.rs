@@ -25,7 +25,7 @@ use crate::settings::{self, Settings};
 use crate::taskbar::{self, Thumbbar};
 use crate::worker::{self, Cmd, Cover, Event, Inbox, WM_APP_EVENTS};
 use cross_next::client::{self, Config};
-use cross_next::icon;
+use cross_next::{icon, net, ui};
 use std::cell::RefCell;
 use std::sync::atomic::{AtomicU32, Ordering};
 use std::sync::mpsc::Sender;
@@ -178,6 +178,37 @@ struct HotkeyStatus {
     result: Result<(), String>,
 }
 
+/// 媒体键的热键 id 起点。组合键占 1..=6，另起一段免得撞号。
+const MEDIA_ID: i32 = 101;
+/// 媒体键被占时隔多久再试一次。占用方退出后就能自动拿回来，不用重启小组件。
+const MEDIA_RETRY: Duration = Duration::from_secs(5);
+
+/// 媒体键为什么没（全部）拿在手里。菜单里要照实说。
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum MediaWhy {
+    Held,
+    /// 设置里关了。
+    Off,
+    /// 服务端就在本机，接管会死循环（见 `hotkey::is_local`）。
+    Local,
+    /// 服务端连不上，暂时放开，让本机播放器接管 —— 同 `listen.exe` 的让出。
+    Yielded,
+    /// 想拿，但有的键被别的程序占着。
+    Busy,
+}
+
+/// 接管媒体键，取代 `listen.exe`。
+struct MediaKeys {
+    enabled: bool,
+    /// 与 `hotkey::MEDIA_KEYS` 一一对应。
+    held: [bool; 3],
+    why: MediaWhy,
+    /// (host, 是否本机)。枚举网卡不便宜，`remote.json` 热重载换了 host 才重算。
+    local: Option<(String, bool)>,
+    /// 上次注册失败的时间，用于 `MEDIA_RETRY`。
+    failed_at: Option<Instant>,
+}
+
 /// 随 DPI 变化的绘制资源。DPI 一变整个丢掉重建。
 struct Res {
     dpi: u32,
@@ -316,6 +347,7 @@ struct App {
 
     topmost: bool,
     hotkeys: Vec<HotkeyStatus>,
+    media: MediaKeys,
     res: Option<Res>,
     /// 上次设到窗口标题上的文字，没变就不再设。
     caption: String,
@@ -663,6 +695,13 @@ pub fn run(config: Config, settings: Settings) -> Result<(), String> {
         tracking: false,
         topmost: settings.topmost,
         hotkeys,
+        media: MediaKeys {
+            enabled: settings.media_keys,
+            held: [false; 3],
+            why: MediaWhy::Off,
+            local: None,
+            failed_at: None,
+        },
         res: None,
         caption: String::new(),
         iconic_dirty: true,
@@ -672,6 +711,7 @@ pub fn run(config: Config, settings: Settings) -> Result<(), String> {
     }
     APP.with(|a| *a.borrow_mut() = Some(app));
     BAR.with(|b| *b.borrow_mut() = Some(Thumbbar::new()));
+    sync_media(hwnd, true);
 
     unsafe {
         SetTimer(Some(hwnd), TIMER_TICK, 500, None);
@@ -809,6 +849,118 @@ fn register_hotkeys(hwnd: HWND, settings: &Settings) -> Vec<HotkeyStatus> {
         .collect()
 }
 
+/// 让媒体键的持有状态跟上设置与连接状况。连接每次变化、每个节拍都会调，没变化时
+/// 什么也不做。`force` 跳过被占时的重试间隔。
+///
+/// 要拿键时 `listen.exe` 若在跑，先把它关掉：两者抢的是同三个键，同时开着只有一个
+/// 拿得到，而小组件就是来取代它的。
+fn sync_media(hwnd: HWND, force: bool) {
+    enum Step {
+        Release(Vec<usize>),
+        Take(Vec<usize>),
+    }
+    let step = with(|app| {
+        let host = app.config.lock().unwrap().host.clone();
+        let local = match &app.media.local {
+            Some((h, l)) if *h == host => *l,
+            _ => {
+                let l = hotkey::is_local(&host, &net::private_ipv4s());
+                app.media.local = Some((host, l));
+                l
+            }
+        };
+        let m = &mut app.media;
+        let why = if !m.enabled {
+            Some(MediaWhy::Off)
+        } else if local {
+            Some(MediaWhy::Local)
+        } else if matches!(app.link, Link::Unreachable) {
+            Some(MediaWhy::Yielded)
+        } else {
+            None
+        };
+        if let Some(why) = why {
+            m.why = why;
+            m.failed_at = None;
+            let held: Vec<usize> = (0..3).filter(|&i| m.held[i]).collect();
+            m.held = [false; 3];
+            return (!held.is_empty()).then_some(Step::Release(held));
+        }
+        let missing: Vec<usize> = (0..3).filter(|&i| !m.held[i]).collect();
+        if missing.is_empty() {
+            m.why = MediaWhy::Held;
+            return None;
+        }
+        if !force && m.failed_at.is_some_and(|t| t.elapsed() < MEDIA_RETRY) {
+            return None;
+        }
+        Some(Step::Take(missing))
+    });
+
+    match step {
+        Some(Some(Step::Release(ids))) => {
+            for i in ids {
+                let _ = unsafe { UnregisterHotKey(Some(hwnd), MEDIA_ID + i as i32) };
+            }
+        }
+        Some(Some(Step::Take(missing))) => {
+            // 等它退出、放开热键再注册，最多 1 秒。没在跑时只是一次 FindWindowW。
+            let closed = ui::close_instance(ui::LISTEN_MARKER, Duration::from_secs(1));
+            let got: Vec<(usize, bool)> = missing
+                .into_iter()
+                .map(|i| {
+                    let (vk, ..) = hotkey::MEDIA_KEYS[i];
+                    // 裸键，不带修饰；按住不连发，免得一按跳好几首。
+                    let id = MEDIA_ID + i as i32;
+                    (
+                        i,
+                        unsafe { RegisterHotKey(Some(hwnd), id, MOD_NOREPEAT, vk) }.is_ok(),
+                    )
+                })
+                .collect();
+            let notify = with(|app| {
+                let m = &mut app.media;
+                for (i, ok) in got {
+                    m.held[i] |= ok;
+                }
+                let all = m.held.iter().all(|h| *h);
+                let first_failure = !all && m.why != MediaWhy::Busy;
+                m.why = if all { MediaWhy::Held } else { MediaWhy::Busy };
+                m.failed_at = (!all).then(Instant::now);
+                if closed {
+                    app.notice("已关闭 listen.exe，媒体键改由小组件接管", true);
+                } else if first_failure {
+                    app.notice("媒体键被其它程序占用，右键菜单里看详情", true);
+                }
+                closed || first_failure
+            });
+            if notify == Some(true) {
+                refresh(hwnd);
+            }
+        }
+        _ => {}
+    }
+}
+
+/// 右键菜单里「接管媒体键」那一项的文字。
+fn media_label(m: &MediaKeys) -> String {
+    let base = "接管媒体键（⏮ ⏯ ⏭）";
+    match m.why {
+        MediaWhy::Held | MediaWhy::Off => base.into(),
+        MediaWhy::Local => format!("{base}\t服务端在本机，不需要"),
+        MediaWhy::Yielded => format!("{base}\t服务端连不上，暂时放开"),
+        MediaWhy::Busy => {
+            let busy: Vec<&str> = hotkey::MEDIA_KEYS
+                .iter()
+                .zip(m.held)
+                .filter(|(_, held)| !held)
+                .map(|((_, _, name), _)| *name)
+                .collect();
+            format!("{base}\t{} 被其它程序占用", busy.join("、"))
+        }
+    }
+}
+
 /// 有组合键没注册上时的一句话提示；全部正常返回 None。
 fn hotkey_problems(list: &[HotkeyStatus]) -> Option<String> {
     let bad: Vec<&str> = list
@@ -932,9 +1084,17 @@ const MENU_MINIMIZE: usize = 3;
 const MENU_EDIT_KEYS: usize = 4;
 const MENU_RELOAD_KEYS: usize = 5;
 const MENU_QUIT: usize = 6;
+const MENU_MEDIA: usize = 7;
 
 fn show_menu(hwnd: HWND) {
-    let Some((topmost, hotkeys)) = with(|app| (app.topmost, app.hotkeys.clone())) else {
+    let Some((topmost, hotkeys, media, media_on)) = with(|app| {
+        (
+            app.topmost,
+            app.hotkeys.clone(),
+            media_label(&app.media),
+            app.media.enabled,
+        )
+    }) else {
         return;
     };
 
@@ -969,6 +1129,8 @@ fn show_menu(hwnd: HWND) {
         item(menu, MF_STRING, MENU_MINIMIZE, "最小化到任务栏");
         item(menu, MF_STRING, MENU_BROWSER, "在浏览器中打开");
         item(menu, MF_POPUP, keys.0 as usize, "组合键");
+        let check = if media_on { MF_CHECKED } else { MF_STRING };
+        item(menu, MF_STRING | check, MENU_MEDIA, &media);
         let _ = AppendMenuW(menu, MF_SEPARATOR, 0, PCWSTR::null());
         item(menu, MF_STRING, MENU_QUIT, "退出");
 
@@ -1046,13 +1208,26 @@ fn show_menu(hwnd: HWND) {
             );
         },
         MENU_RELOAD_KEYS => {
-            let list = register_hotkeys(hwnd, &settings::load());
+            let s = settings::load();
+            let list = register_hotkeys(hwnd, &s);
             with(|app| {
                 let msg = hotkey_problems(&list).unwrap_or_else(|| "组合键已重新载入".into());
                 app.notice(msg, true);
                 app.hotkeys = list;
+                app.media.enabled = s.media_keys;
             });
+            sync_media(hwnd, true);
             refresh(hwnd);
+        }
+        MENU_MEDIA => {
+            let Some(on) = with(|app| {
+                app.media.enabled = !app.media.enabled;
+                app.media.enabled
+            }) else {
+                return;
+            };
+            settings::save_media_keys(on);
+            sync_media(hwnd, true);
         }
         MENU_QUIT => unsafe {
             let _ = DestroyWindow(hwnd);
@@ -1096,6 +1271,8 @@ unsafe extern "system" fn wndproc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: 
     let handled = match msg {
         WM_APP_EVENTS => {
             with(|app| app.drain());
+            // 连接状况可能变了：连不上要放开媒体键，恢复了要拿回来。
+            sync_media(hwnd, false);
             refresh(hwnd);
             Some(LRESULT(0))
         }
@@ -1133,6 +1310,8 @@ unsafe extern "system" fn wndproc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: 
         WM_ERASEBKGND => Some(LRESULT(1)),
 
         WM_TIMER if wparam.0 == TIMER_TICK => {
+            // 媒体键被占时的定时重试。
+            sync_media(hwnd, false);
             // 进度条外推、提示与乐观更新到期，都靠这个节拍重画。
             let need = with(|app| {
                 let now = Instant::now();
@@ -1325,7 +1504,12 @@ unsafe extern "system" fn wndproc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: 
 
         WM_HOTKEY => {
             let id = wparam.0;
-            if let Some(a) = id.checked_sub(1).and_then(|i| Action::ALL.get(i)) {
+            if let Some((_, a, _)) = id
+                .checked_sub(MEDIA_ID as usize)
+                .and_then(|i| hotkey::MEDIA_KEYS.get(i))
+            {
+                act(hwnd, *a);
+            } else if let Some(a) = id.checked_sub(1).and_then(|i| Action::ALL.get(i)) {
                 act(hwnd, *a);
             }
             Some(LRESULT(0))
@@ -1407,6 +1591,9 @@ unsafe extern "system" fn wndproc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: 
                 let _ = KillTimer(Some(hwnd), TIMER_TICK);
                 for id in 1..=Action::ALL.len() as i32 {
                     let _ = UnregisterHotKey(Some(hwnd), id);
+                }
+                for i in 0..hotkey::MEDIA_KEYS.len() as i32 {
+                    let _ = UnregisterHotKey(Some(hwnd), MEDIA_ID + i);
                 }
                 PostQuitMessage(0);
             }

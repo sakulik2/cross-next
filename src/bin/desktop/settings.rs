@@ -1,4 +1,4 @@
-//! `desktop.json`：窗口位置、是否置顶、组合键。放在 exe 同目录。
+//! `desktop.json`：窗口位置、是否置顶、是否接管媒体键、组合键。放在 exe 同目录。
 //!
 //! 刻意不写进 `remote.json`：那份是 `remote`/`listen` 共用的连接配置，`listen` 会
 //! 热重载它，往里写窗口坐标会让它每拖一次窗口就重载一次。这里的东西也与连接无关。
@@ -12,6 +12,8 @@ pub struct Settings {
     /// 窗口左上角，物理像素。`None` 表示没存过，用默认位置。
     pub pos: Option<(i32, i32)>,
     pub topmost: bool,
+    /// 是否接管媒体键（取代 `listen.exe`）。
+    pub media_keys: bool,
     /// 与 [`Action::ALL`] 一一对应的组合键文本。
     pub hotkeys: Vec<(Action, String)>,
 }
@@ -23,6 +25,9 @@ impl Default for Settings {
             // 默认置顶：这个程序存在的理由就是打游戏时用，无边框窗口的游戏会盖住
             // 不置顶的窗口。嫌碍事从右键菜单关掉，或最小化到任务栏。
             topmost: true,
+            // 默认接管：小组件就是为了取代「再开一个 listen.exe」。服务端在本机时
+            // 会自动不接管（见 `hotkey::is_local`），不用为那种情形改默认值。
+            media_keys: true,
             hotkeys: Action::ALL
                 .iter()
                 .map(|a| (*a, a.default_binding().to_string()))
@@ -46,6 +51,7 @@ pub fn parse(text: &str) -> Settings {
     Settings {
         pos: x.zip(y),
         topmost: jsonlite::field(text, "topmost").map_or(d.topmost, |v| v == "true"),
+        media_keys: jsonlite::field(text, "media_keys").map_or(d.media_keys, |v| v == "true"),
         hotkeys: Action::ALL
             .iter()
             .map(|a| {
@@ -64,6 +70,7 @@ pub fn render(s: &Settings) -> String {
         out.push_str(&format!("  \"x\": {x},\n  \"y\": {y},\n"));
     }
     out.push_str(&format!("  \"topmost\": {},\n", s.topmost));
+    out.push_str(&format!("  \"media_keys\": {},\n", s.media_keys));
     let lines: Vec<String> = s
         .hotkeys
         .iter()
@@ -91,15 +98,25 @@ pub fn load() -> Settings {
 }
 
 /// 存窗口位置与置顶状态。
-///
-/// 组合键从**磁盘上的文件**重新读，而不是用内存里那份：用户可能开着程序在改组合键，
-/// 还没点「重新载入」，此时拖一下窗口不该把他的改动覆盖掉。
 pub fn save_window(pos: (i32, i32), topmost: bool) {
+    update(|s| {
+        s.pos = Some(pos);
+        s.topmost = topmost;
+    });
+}
+
+/// 存「接管媒体键」开关。
+pub fn save_media_keys(on: bool) {
+    update(|s| s.media_keys = on);
+}
+
+/// 改一项再写回。其余各项从**磁盘上的文件**重新读，而不是用内存里那份：用户可能
+/// 开着程序在改组合键，还没点「重新载入」，此时拖一下窗口不该把这些改动覆盖掉。
+fn update(change: impl FnOnce(&mut Settings)) {
     let mut s = std::fs::read_to_string(path())
         .map(|t| parse(&t))
         .unwrap_or_default();
-    s.pos = Some(pos);
-    s.topmost = topmost;
+    change(&mut s);
     let _ = std::fs::write(path(), render(&s));
 }
 
@@ -112,6 +129,7 @@ mod tests {
         let mut s = Settings {
             pos: Some((-1200, 300)),
             topmost: false,
+            media_keys: false,
             ..Default::default()
         };
         s.hotkeys[0].1 = "Win+F9".into();
