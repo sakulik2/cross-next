@@ -540,39 +540,28 @@ impl App {
         })
     }
 
-    /// 任务栏缩略图：铺满 DWM 给的整块 `w`×`h`，方形封面居中；没有封面时放程序图标。
+    /// 任务栏缩略图：`side`×`side` 的方图，有封面就是封面本身；没有封面时在封面色
+    /// 的底上放程序图标。
     ///
-    /// 必须正好交这个尺寸。交一张正方形的话 DWM 会把它拉伸到预览框的比例
-    /// （实测：图标被横向压扁），而预览框的比例随窗口形状走，小组件是扁的。
-    fn thumbnail(&mut self, w: usize, h: usize) -> Image {
+    /// 预览框的比例跟着交的图走：DWM 给的上限在 Win11 上固定是 400×235（与窗口形状
+    /// 无关），交一张 235×235 的图，预览就是方的，不会被拉伸。
+    fn thumbnail(&mut self, side: usize) -> Image {
         let (view, _) = self.view();
         let cover = self.cover.clone().filter(|_| view.art);
-        let (a, b) = cover
-            .as_ref()
-            .and_then(|c| c.colors)
-            .unwrap_or((DEFAULT_A, DEFAULT_B));
-        let mut img = Image::new(w, h);
-        img.glow(a, b, w as f32 / 2.0, h as f32 / 2.0, w.max(h) as f32 * 0.7);
-
-        let (art, opacity) = match &cover {
-            Some(c) => (c.img.resize(h, h), 255),
-            None => {
-                let size = (h / 2).max(16);
-                let logo = icon::pick_at_least(APP_ICO, size as i32)
-                    .and_then(icon::decode_bgra)
-                    .map(|(s, px)| Image { w: s, h: s, px }.resize(size, size));
-                match logo {
-                    Some(l) => (l, 255),
-                    None => return img,
-                }
-            }
-        };
-        img.blend(
-            &art,
-            (w as i32 - art.w as i32) / 2,
-            (h as i32 - art.h as i32) / 2,
-            opacity,
-        );
+        if let Some(c) = &cover {
+            return c.img.resize(side, side);
+        }
+        let mut img = Image::new(side, side);
+        let mid = side as f32 / 2.0;
+        img.glow(DEFAULT_A, DEFAULT_B, mid, mid, side as f32 * 0.7);
+        let size = (side / 2).max(16);
+        if let Some(logo) = icon::pick_at_least(APP_ICO, size as i32)
+            .and_then(icon::decode_bgra)
+            .map(|(s, px)| Image { w: s, h: s, px }.resize(size, size))
+        {
+            let at = (side as i32 - logo.w as i32) / 2;
+            img.blend(&logo, at, at, 255);
+        }
         img
     }
 }
@@ -1359,8 +1348,9 @@ unsafe extern "system" fn wndproc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: 
         WM_DWMSENDICONICTHUMBNAIL => {
             // lParam：高 16 位最大宽，低 16 位最大高。给的图不能超出。
             let (mw, mh) = (hiword(lparam.0 as usize), loword(lparam.0 as usize));
-            let (mw, mh) = (mw.max(1) as usize, mh.max(1) as usize);
-            if let Some(img) = with(|app| app.thumbnail(mw, mh))
+            // 交边长取短边的方图。DWM 按图本身的比例显示，不会拉伸到上限的比例。
+            let side = mw.min(mh).max(1) as usize;
+            if let Some(img) = with(|app| app.thumbnail(side))
                 && let Some(bmp) = bitmap(&img, |_| {})
             {
                 unsafe {
