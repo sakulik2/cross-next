@@ -158,9 +158,9 @@ try {
     }
     # 例外：listen.exe 与 desktop.exe 原来同时在跑时只重启 desktop。新版 desktop 自己
     # 接管媒体键，listen 再起来只会抢不到键、弹一个「注册失败」的框（desktop 要接管时
-    # 也会把它关掉）。除非 desktop.json 里明确关了接管 —— 那时媒体键仍得靠 listen。
+    # 也会把它关掉）。除非 config.json 里明确关了接管 —— 那时媒体键仍得靠 listen。
     $desktopTakesKeys = $true
-    $desktopJson = Join-Path $InstallDir "desktop.json"
+    $desktopJson = Join-Path $InstallDir "config.json"
     if ((Test-Path $desktopJson) -and
         ((Get-Content -Raw -Encoding UTF8 $desktopJson) -match '"media_keys"\s*:\s*false')) {
         $desktopTakesKeys = $false

@@ -90,13 +90,13 @@ powershell -ExecutionPolicy Bypass -File update.ps1
 
 取最新发布，停掉在跑的 `cross-next.exe`、`listen.exe` 与 `desktop.exe`，覆盖 exe，再按原样重启 ——
 更新前没在跑的不会被启动。例外：`listen.exe` 与 `desktop.exe` 原来同时在跑时只重启
-`desktop.exe`，媒体键改由它接管（`desktop.json` 里 `media_keys` 为 `false` 时照旧重启 `listen.exe`）。先下载校验再停服务，所以网断了或包坏了只是没更新成，
+`desktop.exe`，媒体键改由它接管（`config.json` 里 `media_keys` 为 `false` 时照旧重启 `listen.exe`）。先下载校验再停服务，所以网断了或包坏了只是没更新成，
 服务照旧。已经是最新版时直接跳过，不会白停一次。
 
 手动更新等效于：`cross-next.exe --stop`（运行中的 exe 被系统锁着，覆盖前必须先退出），
 解压覆盖，重新启动。`--stop` 只关不启，效果和托盘菜单的「退出」一样，区别是能写进脚本。
 
-`config.json` 不在压缩包里，所以覆盖不会动它，token 不变，浏览器和 `remote.json` 那两份
+`config.json` 不在压缩包里，所以覆盖不会动它，token 不变，浏览器和客户端机器上的 `config.json` 那两份
 副本继续有效。解压到**新目录**才会生成新 token —— 那种情况把旧的 `config.json` 带过去。
 
 确认在跑的是哪一版：`cross-next.exe --version`（`listen.exe`、`remote.exe`、`desktop.exe` 同样支持，
@@ -110,6 +110,11 @@ powershell -ExecutionPolicy Bypass -File update.ps1
 | `port` | 监听端口，默认 8770 |
 | `bind` | 留空则自动挑选内网 IPv4；非空时不走自动挑选 |
 | `token` | 首次启动生成，清空则重新生成 |
+| `host` | 客户端填：服务端的地址。服务端不读它 |
+
+这份文件也是 `remote.exe`、`listen.exe`、`desktop.exe` 的连接配置，它们读 `host`、`port`、`token`；`desktop.exe` 另外往里存 `topmost`、`media_keys` 和组合键（见[组合键](#组合键)）。各程序只改自己的字段，其余原样保留，所以服务端和客户端在同一台机器上时共用这一份即可。
+
+从旧版升级：第一次启动时，同目录的 `remote.json`、`desktop.json` 里的字段会并进 `config.json`（只补 `config.json` 里没有的），旧文件改名成 `.old` 留作备份；窗口位置不迁移。
 
 ## 两种控制通路
 
@@ -177,7 +182,7 @@ listen.exe
 
 - **重复启动会自动接管**上一个实例，不必先去关。旧实例收到通知后正常退出并释放热键。
 - 要停下来用 `listen.exe --stop`。
-- **改 `remote.json` 即时生效**，不必重启。换了服务端地址或 token 直接存盘就行。
+- **改 `config.json` 即时生效**，不必重启。换了服务端地址或 token 直接存盘就行。
   文件读坏时保留原配置继续跑。
 
 ### 服务端连不上时
@@ -208,7 +213,7 @@ listen.exe
 ## 桌面小组件：desktop.exe
 
 不开浏览器的遥控界面，放在鼠标所在的机器上。和网页一样只是界面，走同一套 API，
-连接配置读 `remote.json`（格式见上文 `remote.exe`）。
+连接配置读 `config.json`（格式见上文 `remote.exe`）。
 
 ```
 desktop.exe            启动；已在运行则把窗口叫出来
@@ -228,8 +233,9 @@ desktop.exe --stop     关掉正在运行的实例
 
 小组件：
 
-- 默认置顶，位于主屏右下角。按钮以外的地方都能拖，位置会记住。
+- 默认置顶，位于主屏右下角。按钮以外的地方都能拖，位置不记，下次启动回到右下角。
 - **点它不抢焦点**：游戏不会因此失去焦点或松开鼠标。右键菜单例外。
+- 右上角有个半透明的 ✕，悬停变实，点一下退出，等同右键菜单的「退出」。连不上服务端时也能点。
 - 滚轮调 QQ音乐 音量。
 - 右键菜单：置顶开关、最小化到任务栏、在浏览器中打开、组合键状态、接管媒体键开关、退出。
 
@@ -241,10 +247,10 @@ desktop.exe --stop     关掉正在运行的实例
 - 启动时（以及之后每次要接管时）发现 `listen.exe` 在跑，会先把它关掉 —— 两者抢同三个键，
   同时开着只有一个拿得到。
 - 服务端连不上时放开，让媒体键回到本机播放器；连上后自动拿回。
-- `remote.json` 的 `host` 是本机地址（服务端就在这台机器上）时不接管：本机的媒体键本来
+- `config.json` 的 `host` 是本机地址（服务端就在这台机器上）时不接管：本机的媒体键本来
   就能直达 QQ音乐，接管反而会和服务端的媒体键模式来回转发。
 - 被其它程序占用时，小组件上提示一次，右键菜单里标出是哪个键，每 5 秒重试。
-- 不想接管：右键菜单取消勾选「接管媒体键」，或把 `desktop.json` 的 `media_keys` 改成
+- 不想接管：右键菜单取消勾选「接管媒体键」，或把 `config.json` 的 `media_keys` 改成
   `false`。
 
 ### 组合键
@@ -256,7 +262,7 @@ desktop.exe --stop     关掉正在运行的实例
 | 音量 + / - | Ctrl+Alt+↑ / ↓（按住连续调） |
 | 静音 | 未设置 |
 
-在 exe 同目录的 `desktop.json` 里改，首次运行时生成：
+在 exe 同目录的 `config.json` 里改，这些字段首次运行时自动补全，与其它字段并存：
 
 ```json
 {

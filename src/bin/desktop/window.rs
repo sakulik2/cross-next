@@ -42,8 +42,7 @@ use windows::Win32::Graphics::Gdi::{
     CLIP_DEFAULT_PRECIS, CreateCompatibleDC, CreateDIBSection, CreateFontW, DEFAULT_CHARSET,
     DIB_RGB_COLORS, DT_END_ELLIPSIS, DT_LEFT, DT_NOPREFIX, DT_SINGLELINE, DT_VCENTER, DeleteDC,
     DeleteObject, DrawTextW, EndPaint, GdiFlush, HBITMAP, HDC, HFONT, HGDIOBJ, InvalidateRect,
-    MONITOR_DEFAULTTONULL, MonitorFromPoint, OUT_DEFAULT_PRECIS, PAINTSTRUCT, SRCCOPY,
-    SelectObject, SetBkMode, SetTextColor, TRANSPARENT,
+    OUT_DEFAULT_PRECIS, PAINTSTRUCT, SRCCOPY, SelectObject, SetBkMode, SetTextColor, TRANSPARENT,
 };
 use windows::Win32::UI::HiDpi::{GetDpiForSystem, GetDpiForWindow};
 use windows::Win32::UI::Input::KeyboardAndMouse::{
@@ -90,6 +89,12 @@ const BTN: i32 = 34;
 const BTN_Y: i32 = 70;
 const BTN_GAP: i32 = 46;
 const GLYPH: i32 = 20;
+/// 右上角关闭按钮：点击区直径、X 的边长、距窗口上沿和右沿的空隙。
+const CLOSE: i32 = 22;
+const CLOSE_GLYPH: i32 = 10;
+const CLOSE_INSET: i32 = 6;
+/// 标题行的右沿：比文字区窄一截，给关闭按钮让位。
+const TITLE_R: i32 = W - CLOSE_INSET - CLOSE - 4;
 const PLAY_GLYPH: i32 = 24;
 /// 进度条贴着窗口底边，横贯全宽。
 const BAR_H: i32 = 3;
@@ -121,17 +126,30 @@ enum Btn {
     Prev,
     PlayPause,
     Next,
+    Close,
 }
 
 impl Btn {
-    const ALL: [Btn; 3] = [Btn::Prev, Btn::PlayPause, Btn::Next];
+    const ALL: [Btn; 4] = [Btn::Prev, Btn::PlayPause, Btn::Next, Btn::Close];
 
-    fn action(self) -> Action {
+    /// 关闭不对应任何播放动作，由窗口自己处理。
+    fn action(self) -> Option<Action> {
         match self {
-            Btn::Prev => Action::Prev,
-            Btn::PlayPause => Action::PlayPause,
-            Btn::Next => Action::Next,
+            Btn::Prev => Some(Action::Prev),
+            Btn::PlayPause => Some(Action::PlayPause),
+            Btn::Next => Some(Action::Next),
+            Btn::Close => None,
         }
+    }
+
+    /// 播放按钮在连不上服务端时停用；关闭按钮不能跟着停，连不上时更需要它。
+    fn needs_server(self) -> bool {
+        self != Btn::Close
+    }
+
+    /// 圆形点击区的直径，DIP。
+    fn diameter(self) -> i32 {
+        if self == Btn::Close { CLOSE } else { BTN }
     }
 }
 
@@ -151,18 +169,22 @@ impl Layout {
     }
 
     fn button_center(self, b: Btn) -> (i32, i32) {
-        let cx = (TEXT_X + TEXT_R) / 2;
         let off = match b {
             Btn::Prev => -BTN_GAP,
             Btn::PlayPause => 0,
             Btn::Next => BTN_GAP,
+            Btn::Close => {
+                let r = CLOSE / 2;
+                return (self.px(W - CLOSE_INSET - r), self.px(CLOSE_INSET + r));
+            }
         };
+        let cx = (TEXT_X + TEXT_R) / 2;
         (self.px(cx + off), self.px(BTN_Y))
     }
 
     fn hit(self, x: i32, y: i32) -> Option<Btn> {
-        let r = self.px(BTN) / 2;
         Btn::ALL.into_iter().find(|b| {
+            let r = self.px(b.diameter()) / 2;
             let (cx, cy) = self.button_center(*b);
             (x - cx).pow(2) + (y - cy).pow(2) <= r * r
         })
@@ -203,7 +225,7 @@ struct MediaKeys {
     /// 与 `hotkey::MEDIA_KEYS` 一一对应。
     held: [bool; 3],
     why: MediaWhy,
-    /// (host, 是否本机)。枚举网卡不便宜，`remote.json` 热重载换了 host 才重算。
+    /// (host, 是否本机)。枚举网卡不便宜，`config.json` 热重载换了 host 才重算。
     local: Option<(String, bool)>,
     /// 上次注册失败的时间，用于 `MEDIA_RETRY`。
     failed_at: Option<Instant>,
@@ -219,6 +241,9 @@ struct Res {
     pause: Image,
     next: Image,
     disc: Image,
+    /// 关闭按钮：X 与它悬停时的底（比播放按钮的小）。
+    close: Image,
+    close_disc: Image,
     placeholder: Image,
     /// 缩放过的封面，以 `Arc` 指针识别是哪一张。
     cover: Option<(usize, Image)>,
@@ -268,6 +293,8 @@ impl Res {
             pause: glyph(PAUSE_ICO, PLAY_GLYPH),
             next: glyph(NEXT_ICO, GLYPH),
             disc: pixels::disc(l.px(BTN) as usize, FG),
+            close: pixels::cross(l.px(CLOSE_GLYPH) as usize, l.px(3) as f32 / 2.0, FG),
+            close_disc: pixels::disc(l.px(CLOSE) as usize, FG),
             placeholder,
             cover: None,
         }
@@ -505,12 +532,19 @@ impl App {
 
         for b in Btn::ALL {
             let (cx, cy) = l.button_center(b);
-            if view.enabled && self.hover == Some(b) {
+            let live = view.enabled || !b.needs_server();
+            if live && self.hover == Some(b) {
                 let alpha = if self.pressed == Some(b) { 64 } else { 36 };
-                let r = (res.disc.w / 2) as i32;
-                img.blend(&res.disc, cx - r, cy - r, alpha);
+                let disc = if b == Btn::Close {
+                    &res.close_disc
+                } else {
+                    &res.disc
+                };
+                let r = (disc.w / 2) as i32;
+                img.blend(disc, cx - r, cy - r, alpha);
             }
             let glyph = match (b, view.glyph) {
+                (Btn::Close, _) => &res.close,
                 (Btn::Prev, _) => &res.prev,
                 (Btn::Next, _) => &res.next,
                 (Btn::PlayPause, Glyph::Play) => &res.play,
@@ -521,7 +555,13 @@ impl App {
                 glyph,
                 cx - half,
                 cy - half,
-                if view.enabled { 240 } else { 80 },
+                match (b, live) {
+                    (Btn::Close, _) if self.hover == Some(b) => 255,
+                    // 关闭按钮平时半透明，不抢眼。
+                    (Btn::Close, _) => 130,
+                    (_, true) => 240,
+                    (_, false) => 80,
+                },
             );
         }
 
@@ -543,7 +583,7 @@ impl App {
         let line1 = RECT {
             left: l.px(TEXT_X),
             top: l.px(13),
-            right: l.px(TEXT_R),
+            right: l.px(TITLE_R),
             bottom: l.px(34),
         };
         let line2 = RECT {
@@ -746,7 +786,7 @@ fn create(settings: &Settings) -> Option<HWND> {
         if settings.topmost {
             ex |= WS_EX_TOPMOST;
         }
-        let (x, y) = initial_position(settings);
+        let (x, y) = initial_position();
         let hwnd = CreateWindowExW(
             ex,
             CLASS,
@@ -793,15 +833,8 @@ fn create(settings: &Settings) -> Option<HWND> {
     }
 }
 
-/// 上次保存的位置；没存过、或那块显示器已经不在了，就放主屏工作区右下角。
-fn initial_position(settings: &Settings) -> (i32, i32) {
-    if let Some((x, y)) = settings.pos {
-        // 拔掉副屏后坐标可能落在虚空里，窗口就再也找不回来了。
-        let probe = POINT { x: x + 8, y: y + 8 };
-        if !unsafe { MonitorFromPoint(probe, MONITOR_DEFAULTTONULL) }.is_invalid() {
-            return (x, y);
-        }
-    }
+/// 主屏工作区右下角。位置不持久化，每次启动都从这里开始，拖到哪算哪。
+fn initial_position() -> (i32, i32) {
     let mut work = RECT::default();
     let _ = unsafe {
         SystemParametersInfoW(
@@ -1121,7 +1154,7 @@ fn show_menu(hwnd: HWND) {
             item(keys, MF_STRING | MF_GRAYED, 0, &text);
         }
         let _ = AppendMenuW(keys, MF_SEPARATOR, 0, PCWSTR::null());
-        item(keys, MF_STRING, MENU_EDIT_KEYS, "编辑 desktop.json");
+        item(keys, MF_STRING, MENU_EDIT_KEYS, "编辑 config.json");
         item(keys, MF_STRING, MENU_RELOAD_KEYS, "重新载入");
 
         let check = if topmost { MF_CHECKED } else { MF_STRING };
@@ -1175,7 +1208,7 @@ fn show_menu(hwnd: HWND) {
                     SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE,
                 );
             }
-            save_position(hwnd);
+            settings::save_topmost(on);
         }
         MENU_MINIMIZE => unsafe {
             let _ = ShowWindow(hwnd, SW_MINIMIZE);
@@ -1233,15 +1266,6 @@ fn show_menu(hwnd: HWND) {
             let _ = DestroyWindow(hwnd);
         },
         _ => {}
-    }
-}
-
-fn save_position(hwnd: HWND) {
-    let mut r = RECT::default();
-    if unsafe { GetWindowRect(hwnd, &mut r) }.is_ok()
-        && let Some(topmost) = with(|app| app.topmost)
-    {
-        settings::save_window((r.left, r.top), topmost);
     }
 }
 
@@ -1341,7 +1365,11 @@ unsafe extern "system" fn wndproc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: 
         WM_MOUSEACTIVATE => Some(LRESULT(MA_NOACTIVATE as isize)),
 
         WM_SETCURSOR => {
-            let over = with(|app| app.hover.is_some() && app.view().0.enabled).unwrap_or(false);
+            let over = with(|app| {
+                app.hover
+                    .is_some_and(|b| !b.needs_server() || app.view().0.enabled)
+            })
+            .unwrap_or(false);
             if over {
                 unsafe {
                     SetCursor(LoadCursorW(None, IDC_HAND).ok());
@@ -1416,7 +1444,11 @@ unsafe extern "system" fn wndproc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: 
         WM_LBUTTONDOWN => {
             let (x, y) = (loword(lparam.0 as usize), hiword(lparam.0 as usize));
             with(|app| {
-                let hit = app.layout().hit(x, y).filter(|_| app.view().0.enabled);
+                let enabled = app.view().0.enabled;
+                let hit = app
+                    .layout()
+                    .hit(x, y)
+                    .filter(|b| enabled || !b.needs_server());
                 if hit.is_some() {
                     app.pressed = hit;
                 } else {
@@ -1447,18 +1479,19 @@ unsafe extern "system" fn wndproc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: 
             let (x, y) = (loword(lparam.0 as usize), hiword(lparam.0 as usize));
             let r = with(|app| {
                 let pressed = app.pressed.take();
-                let dragged = app.drag.take().is_some();
+                app.drag = None;
                 // 按下和松开在同一个按钮上才算一次点击，和系统按钮一样。
-                let fire = pressed.filter(|b| app.layout().hit(x, y) == Some(*b));
-                (fire, dragged)
+                pressed.filter(|b| app.layout().hit(x, y) == Some(*b))
             });
             let _ = unsafe { ReleaseCapture() };
-            if let Some((fire, dragged)) = r {
-                if let Some(b) = fire {
-                    act(hwnd, b.action());
-                }
-                if dragged {
-                    save_position(hwnd);
+            if let Some(Some(b)) = r {
+                match b.action() {
+                    Some(a) => act(hwnd, a),
+                    // 关闭和右键菜单「退出」走同一条路：DestroyWindow 触发 WM_DESTROY，
+                    // 在那里放开热键再退出。
+                    None => unsafe {
+                        let _ = DestroyWindow(hwnd);
+                    },
                 }
             }
             unsafe {
@@ -1624,6 +1657,25 @@ mod tests {
         assert_eq!(big.size(), (W * 2, H * 2));
         let (cx, cy) = big.button_center(Btn::Next);
         assert_eq!(big.hit(cx, cy), Some(Btn::Next));
+    }
+
+    #[test]
+    fn close_button_hits_and_clears_title() {
+        for dpi in [96, 144, 192] {
+            let l = Layout { dpi };
+            let (cx, cy) = l.button_center(Btn::Close);
+            assert_eq!(l.hit(cx, cy), Some(Btn::Close));
+            let (w, _) = l.size();
+            assert!(cx + l.px(CLOSE) / 2 <= w, "关闭按钮不能超出窗口右沿");
+            assert!(
+                l.px(TITLE_R) <= cx - l.px(CLOSE) / 2,
+                "标题不能压到关闭按钮"
+            );
+            for b in [Btn::Prev, Btn::PlayPause, Btn::Next] {
+                let (bx, by) = l.button_center(b);
+                assert_ne!(l.hit(bx, by), Some(Btn::Close));
+            }
+        }
     }
 
     #[test]

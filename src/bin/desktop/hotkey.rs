@@ -22,7 +22,7 @@ pub const MEDIA_KEYS: [(u32, Action, &str); 3] = [
 /// 转发回去，它再发一次，无限循环地切歌。何况本机的媒体键本来就能直达 QQ音乐。
 ///
 /// `host` 是主机名（非 IP、非 localhost）时判为不是本机：在 UI 线程上做 DNS 解析
-/// 可能卡住，而服务端只绑具体的内网 IP，`remote.json` 里填的通常就是那个 IP。
+/// 可能卡住，而服务端只绑具体的内网 IP，`config.json` 里填的通常就是那个 IP。
 pub fn is_local(host: &str, own: &[Ipv4Addr]) -> bool {
     let host = host.trim();
     if host.eq_ignore_ascii_case("localhost") {
@@ -56,7 +56,7 @@ impl Action {
         Action::Mute,
     ];
 
-    /// `desktop.json` 里的字段名。
+    /// `config.json` 里的字段名。
     pub fn key(self) -> &'static str {
         match self {
             Action::Prev => "hotkey_prev",
@@ -71,7 +71,7 @@ impl Action {
     /// 默认键位。静音默认不绑：误触的代价（突然没声）比其它几个大。
     ///
     /// Ctrl+Alt+方向键在部分老 Intel 核显驱动里是「旋转屏幕」，那种机器上会注册
-    /// 失败，菜单里能看到是哪个，改 `desktop.json` 换掉即可。
+    /// 失败，菜单里能看到是哪个，改 `config.json` 换掉即可。
     pub fn default_binding(self) -> &'static str {
         match self {
             Action::Prev => "Ctrl+Alt+Left",

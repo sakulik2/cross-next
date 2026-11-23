@@ -149,15 +149,19 @@ fn run(rx: Receiver<Cmd>, config: Arc<Mutex<Config>>, out: Outbox) {
         extra_polls.retain(|t| *t > now);
 
         if poll_due {
-            // remote.json 改了就换配置 —— 填错 token 后改文件，界面自己恢复，
+            // config.json 改了就换配置 —— 填错 token 后改文件，界面自己恢复，
             // 不用重启。读坏了就继续用旧的。
             let s = config_stamp();
             if s != stamp {
                 stamp = s;
                 if let Ok(c) = client::load_config() {
-                    *config.lock().unwrap() = c;
-                    // 换了服务端，旧封面不再作数。
-                    art.tag = None;
+                    let mut cur = config.lock().unwrap();
+                    // 小组件自己的开关也在这个文件里，改它们不该清掉封面缓存。
+                    if *cur != c {
+                        *cur = c;
+                        // 换了服务端，旧封面不再作数。
+                        art.tag = None;
+                    }
                 }
             }
 
@@ -276,7 +280,7 @@ fn fnv(bytes: &[u8]) -> u64 {
     })
 }
 
-/// `remote.json` 的修改时间，用来判断要不要重读。
+/// `config.json` 的修改时间，用来判断要不要重读。
 fn config_stamp() -> Option<SystemTime> {
     std::fs::metadata(client::config_path())
         .and_then(|m| m.modified())

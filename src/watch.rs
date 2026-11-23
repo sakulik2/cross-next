@@ -2,7 +2,7 @@
 //!
 //! 两件事共用一个后台线程，因为它们都只需要「等一个事件或超时」：
 //!
-//!   - **热重载**：`remote.json` 改了就换掉内存里的 Config。事件驱动，不轮询 ——
+//!   - **热重载**：`config.json` 改了就换掉内存里的 Config。事件驱动，不轮询 ——
 //!     `FindFirstChangeNotificationW` + `WaitForSingleObject` 带超时，超时那一路
 //!     正好用来做探活。
 //!   - **探活**：太久没有按键活动时试一次 `/api/state`，确认服务端还在。

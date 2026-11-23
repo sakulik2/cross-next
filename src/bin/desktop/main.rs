@@ -1,7 +1,7 @@
 //! `desktop.exe` —— 桌面小组件 + 任务栏缩略图按钮 + 全局组合键。
 //!
 //! 它只是又一个界面，和网页平级：通过同一套 HTTP API 遥控服务端，服务端不为它
-//! 做任何特殊处理。连接配置与 `remote.exe`/`listen.exe` 共用 `remote.json`。
+//! 做任何特殊处理。连接配置与服务端、`remote.exe`/`listen.exe` 共用 `config.json`。
 //!
 //! 三种操作途径，对应打游戏时的三种情形：
 //!
@@ -56,7 +56,7 @@ fn main() {
     }
 
     // 配置在启动时就校验，连不上服务端倒不要紧（界面会显示并自动重连），
-    // 但没有 remote.json 就不知道连谁。
+    // 但没有 config.json 就不知道连谁。
     let config = match client::load_config() {
         Ok(c) => c,
         Err(e) => {

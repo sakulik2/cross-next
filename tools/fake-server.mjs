@@ -2,8 +2,8 @@
 //
 //     node tools/fake-server.mjs [端口，默认 18771]
 //
-// 然后把 desktop.exe 旁边 remote.json 的 host/port 指向 127.0.0.1 和这个端口
-// （token 随便填，这里不校验）。desktop.exe 会热重载 remote.json，不必重启。
+// 然后把 desktop.exe 旁边 config.json 的 host/port 指向 127.0.0.1 和这个端口
+// （token 随便填，这里不校验）。desktop.exe 会热重载 config.json，不必重启。
 //
 // 为什么需要它：没有 QQ音乐 时真服务端处在 none 模式，按下任何切歌键都会退化成
 // **全局媒体键** —— 若这台机器上还开着 listen.exe，它会把键转发到真正的服务端，

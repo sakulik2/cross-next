@@ -118,7 +118,7 @@ pub fn view(link: &Link, addr: &str) -> View {
     let s = match link {
         Link::Connecting => return idle("正在连接…", addr, false),
         Link::Unreachable => return idle("连不上服务端", addr, false),
-        Link::Unauthorized => return idle("token 无效", "检查 remote.json 里的 token", false),
+        Link::Unauthorized => return idle("token 无效", "检查 config.json 里的 token", false),
         Link::Failed(e) => return idle("服务端出错", first_line(e), false),
         Link::Ok(s) => s,
     };

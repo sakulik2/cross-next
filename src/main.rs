@@ -12,7 +12,11 @@
 
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
-use cross_next::{http, jsonlite::field, media, net, tray, ui};
+use cross_next::{
+    http,
+    jsonlite::{field, set},
+    media, net, tray, ui,
+};
 use std::net::{IpAddr, Ipv4Addr, SocketAddr};
 use std::path::PathBuf;
 
@@ -182,9 +186,10 @@ fn load_or_create(path: &PathBuf) -> std::io::Result<(Config, bool)> {
             token,
         };
 
-        // 补写回去，下次启动就稳定了。
+        // 补写回去，下次启动就稳定了。只改 token 一项：这份文件也存着客户端和小组件的
+        // 字段，整份重写会把它们抹掉。
         if fresh {
-            write_config(path, &config)?;
+            std::fs::write(path, set(&text, "token", &format!("\"{}\"", config.token)))?;
         }
         return Ok((config, fresh));
     }

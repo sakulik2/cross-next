@@ -176,6 +176,30 @@ pub fn disc(size: usize, rgb: Rgb) -> Image {
     img
 }
 
+/// 抗锯齿的 X：两条对角线，`thick` 是线宽（像素）。关闭按钮用，不值得为它单独做个 .ico。
+pub fn cross(size: usize, thick: f32, rgb: Rgb) -> Image {
+    let mut img = Image::new(size, size);
+    let s = size as f32;
+    for y in 0..size {
+        for x in 0..size {
+            let px = x as f32 + 0.5;
+            let py = y as f32 + 0.5;
+            // 两条线都是 45°，点到线的距离就是坐标差除以 √2。
+            let d = (px - py).abs().min((px + py - s).abs()) / std::f32::consts::SQRT_2;
+            let cover = (thick / 2.0 - d + 0.5).clamp(0.0, 1.0);
+            if cover > 0.0 {
+                let i = (y * size + x) * 4;
+                // 预乘：颜色和 alpha 一起乘覆盖率。
+                img.px[i] = (rgb[2] as f32 * cover).round() as u8;
+                img.px[i + 1] = (rgb[1] as f32 * cover).round() as u8;
+                img.px[i + 2] = (rgb[0] as f32 * cover).round() as u8;
+                img.px[i + 3] = (255.0 * cover).round() as u8;
+            }
+        }
+    }
+    img
+}
+
 /// 一维重采样权重：每个目标像素取哪些源像素、各占多少。
 fn weights(src: usize, dst: usize) -> Vec<Vec<(usize, f32)>> {
     let scale = src as f32 / dst as f32;
@@ -374,5 +398,30 @@ mod tests {
         let d = disc(10, [255, 255, 255]);
         assert_eq!(d.at(0, 0)[3], 0);
         assert_eq!(d.at(5, 5)[3], 255);
+    }
+
+    #[test]
+    fn cross_covers_both_diagonals_and_is_premultiplied() {
+        let c = cross(12, 1.5, [200, 100, 50]);
+        assert_eq!((c.w, c.h), (12, 12));
+        // 两条对角线上的点是实的，像素顺序是 BGRA。
+        for (x, y) in [(0, 0), (5, 5), (11, 11), (11, 0), (0, 11)] {
+            assert_eq!(c.at(x, y), [50, 100, 200, 255], "({x},{y}) 在对角线上");
+        }
+        // 离开对角线的地方是透明的。
+        for (x, y) in [(6, 0), (0, 6), (11, 5), (5, 11)] {
+            assert_eq!(c.at(x, y)[3], 0, "({x},{y}) 不在 X 上");
+        }
+        // 沿对角线对称，边缘抗锯齿的像素也不能偏。
+        for y in 0..12 {
+            for x in 0..12 {
+                assert_eq!(c.at(x, y)[3], c.at(y, x)[3]);
+                assert_eq!(c.at(x, y)[3], c.at(11 - x, y)[3]);
+            }
+        }
+        // 预乘：任何像素的颜色通道都不能超过 alpha。
+        for p in c.px.as_chunks::<4>().0 {
+            assert!(p[0] <= p[3] && p[1] <= p[3] && p[2] <= p[3]);
+        }
     }
 }

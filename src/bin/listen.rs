@@ -143,7 +143,7 @@ fn main() {
         return;
     }
 
-    // 配置放进共享状态，这样改 remote.json 能就地生效，不必重启进程 ——
+    // 配置放进共享状态，这样改 config.json 能就地生效，不必重启进程 ——
     // 重启会先释放热键再重新注册，那个窗口期里别的程序可能抢走。
     let shared = watch::Shared::new(config);
 

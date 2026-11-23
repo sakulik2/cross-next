@@ -11,7 +11,7 @@
 //!   remote.exe vol 60       音量设为 60%
 //!   remote.exe mute
 //!
-//! 服务器地址与 token 从同目录的 remote.json 读，没有就按提示生成一份。
+//! 服务器地址与 token 从同目录的 config.json 读，没有就按提示生成一份。
 //!
 //! 编译成 Windows 子系统（见 main 上方的 windows_subsystem 属性），所以按下去
 //! 不会闪一个黑框。出错时用消息框提示，因为这种场景下没有控制台可看。

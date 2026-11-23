@@ -85,6 +85,57 @@ pub fn number(text: &str, key: &str) -> Option<f64> {
     rest[..end].parse().ok()
 }
 
+/// 把 `key` 的值设为 `raw` 并返回新文本。`raw` 必须已是合法的 JSON 字面量，字符串自己带引号。
+///
+/// 键已存在就只换值，其余字节原样保留（别的程序写的字段、手写的缩进和注释字段都不动）；
+/// 不存在就补在末尾。几个程序共用一份配置文件时，这就是「合并」：各改各的字段，互不覆盖。
+pub fn set(text: &str, key: &str, raw: &str) -> String {
+    if let Some(rest) = after_key(text, key) {
+        let start = text.len() - rest.len();
+        let end = start + value_len(rest);
+        return format!("{}{}{}", &text[..start], raw, &text[end..]);
+    }
+    let Some(close) = text.rfind('}') else {
+        return format!("{{\n  \"{key}\": {raw}\n}}\n");
+    };
+    let head = text[..close].trim_end();
+    let comma = if head.ends_with('{') { "" } else { "," };
+    format!("{head}{comma}\n  \"{key}\": {raw}\n{}", &text[close..])
+}
+
+/// 取字段的原始字面量（字符串带引号、转义原样）。要把值原封不动搬到另一份文件时用。
+pub fn raw<'a>(text: &'a str, key: &str) -> Option<&'a str> {
+    let rest = after_key(text, key)?;
+    Some(&rest[..value_len(rest)]).filter(|v| !v.is_empty())
+}
+
+/// 把 `old` 里有、`text` 里没有的 `keys` 逐项并进 `text`；`text` 已有的一律不动。
+/// 旧版本拆开的几份配置并进 config.json 时用。
+pub fn merge_missing(text: &str, old: &str, keys: &[&str]) -> String {
+    keys.iter()
+        .fold(text.to_string(), |t, k| match raw(old, k) {
+            Some(v) if raw(&t, k).is_none() => set(&t, k, v),
+            _ => t,
+        })
+}
+
+/// 值占多少字节：带引号的字符串（认转义）或裸值。
+fn value_len(rest: &str) -> usize {
+    if rest.starts_with('"') {
+        let mut esc = false;
+        for (i, c) in rest.char_indices().skip(1) {
+            match c {
+                '\\' if !esc => esc = true,
+                '"' if !esc => return i + 1,
+                _ => esc = false,
+            }
+        }
+        return rest.len();
+    }
+    rest.find(|c: char| c == ',' || c == '}' || c.is_whitespace())
+        .unwrap_or(rest.len())
+}
+
 /// 定位到 `"key":` 之后，跳过空白。
 fn after_key<'a>(text: &'a str, key: &str) -> Option<&'a str> {
     let needle = format!("\"{key}\"");
@@ -124,5 +175,41 @@ mod tests {
         assert_eq!(string(r#"{"a":"unterminated"#, "a"), None);
         assert_eq!(string(r#"{"a":"x\"#, "a"), None);
         assert_eq!(string(r#"{"b":"x"}"#, "a"), None);
+    }
+
+    #[test]
+    fn set_replaces_in_place_and_keeps_the_rest() {
+        let t = r#"{"a": 1, "b": "x\"y", "c": true}"#;
+        assert_eq!(set(t, "a", "2"), r#"{"a": 2, "b": "x\"y", "c": true}"#);
+        assert_eq!(set(t, "b", r#""z""#), r#"{"a": 1, "b": "z", "c": true}"#);
+        assert_eq!(set(t, "c", "false"), r#"{"a": 1, "b": "x\"y", "c": false}"#);
+    }
+
+    #[test]
+    fn set_appends_missing_keys() {
+        assert_eq!(set(r#"{"a": 1}"#, "b", "2"), "{\"a\": 1,\n  \"b\": 2\n}");
+        assert_eq!(set("{}", "a", "1"), "{\n  \"a\": 1\n}");
+        assert_eq!(set("", "a", "1"), "{\n  \"a\": 1\n}\n");
+        // 补进去的值读得回来，原有的字段不受影响。
+        let t = set(r#"{"a": 1}"#, "b", "true");
+        assert_eq!(field(&t, "a").as_deref(), Some("1"));
+        assert_eq!(field(&t, "b").as_deref(), Some("true"));
+    }
+
+    #[test]
+    fn merge_missing_fills_only_absent_keys() {
+        let cur = r#"{"token": "new", "port": 9000}"#;
+        let old = r#"{"host": "h", "port": 8770, "token": "old", "k": "x y", "hk": ""}"#;
+        let out = merge_missing(cur, old, &["host", "port", "token", "k", "hk", "gone"]);
+        assert_eq!(field(&out, "host").as_deref(), Some("h"));
+        // 已有的不被旧值顶掉。
+        assert_eq!(field(&out, "port").as_deref(), Some("9000"));
+        assert_eq!(field(&out, "token").as_deref(), Some("new"));
+        assert_eq!(raw(&out, "k"), Some(r#""x y""#));
+        // 空字符串是用户有意清空的，也要搬过来。
+        assert_eq!(raw(&out, "hk"), Some(r#""""#));
+        assert_eq!(raw(&out, "gone"), None);
+        // 再并一次不变。
+        assert_eq!(merge_missing(&out, old, &["host", "k", "hk"]), out);
     }
 }

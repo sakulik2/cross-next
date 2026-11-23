@@ -20,16 +20,37 @@ pub struct Config {
     pub token: String,
 }
 
-/// 客户端配置放在 exe 同目录的 remote.json。
+/// 客户端配置放在 exe 同目录的 config.json，与服务端、小组件共用一份文件，各读各的字段。
+/// 服务端在本机时这份文件里已有 port 和 token，只差一个 host。
 pub fn config_path() -> PathBuf {
     std::env::current_exe()
         .ok()
-        .and_then(|p| p.parent().map(|d| d.join("remote.json")))
-        .unwrap_or_else(|| PathBuf::from("remote.json"))
+        .and_then(|p| p.parent().map(|d| d.join("config.json")))
+        .unwrap_or_else(|| PathBuf::from("config.json"))
+}
+
+/// 把旧版拆开的 `legacy` 文件（`remote.json`、`desktop.json`）里的 `keys` 并进 config.json：
+/// 只补 config.json 里没有的，已有的不动；写成功后旧文件改名成 `.old`，不再重复读取。
+/// 改名而不是删除，万一并错了还能找回原值。
+pub fn merge_legacy(legacy: &str, keys: &[&str]) {
+    let path = config_path();
+    let old = path.with_file_name(legacy);
+    let Ok(old_text) = std::fs::read_to_string(&old) else {
+        return;
+    };
+    let text = std::fs::read_to_string(&path).unwrap_or_default();
+    let merged = jsonlite::merge_missing(&text, &old_text, keys);
+    // 没有要并的字段时不碰 config.json，免得凭空写出一个空文件。
+    if merged == text || std::fs::write(&path, &merged).is_ok() {
+        let bak = old.with_extension("json.old");
+        let _ = std::fs::remove_file(&bak);
+        let _ = std::fs::rename(&old, &bak);
+    }
 }
 
 /// 读配置。文件不存在时写一份模板并返回提示。
 pub fn load_config() -> Result<Config, String> {
+    merge_legacy("remote.json", &["host", "port", "token"]);
     let path = config_path();
     let text = std::fs::read_to_string(&path).map_err(|_| {
         // 没有配置就顺手写一份模板，比让用户自己猜格式友好。
@@ -37,7 +58,7 @@ pub fn load_config() -> Result<Config, String> {
                         \"token\": \"把服务端 config.json 里的 token 抄过来\"\n}\n";
         let _ = std::fs::write(&path, template);
         format!(
-            "缺少配置，已生成模板：\n{}\n\n把服务端 config.json 里的 host 和 token 填进去。",
+            "缺少配置，已生成模板：\n{}\n\nhost 填服务端的地址，token 抄服务端那份 config.json 里的。",
             path.display()
         )
     })?;
@@ -136,9 +157,7 @@ fn request(
     let (status, body) = fetch(config, method, path, body)?;
 
     if status == 401 {
-        return Err(
-            "token 无效。检查 remote.json 里的 token 和服务端 config.json 是否一致。".into(),
-        );
+        return Err("token 无效。检查本机 config.json 里的 token 和服务端那份是否一致。".into());
     }
     if status != 200 {
         return Err(format!("服务端返回 HTTP {status}"));
